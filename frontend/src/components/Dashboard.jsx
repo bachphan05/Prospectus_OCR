@@ -2,6 +2,178 @@ import { useState, useEffect } from 'react';
 import api from '../services/api';
 
 /**
+ * HighlightBox Component - Renders a highlighted bounding box overlay with tooltip
+ * @param {Array} bbox - Bounding box [ymin, xmin, ymax, xmax] in 0-1000 scale
+ * @param {string} label - Field name/label
+ * @param {*} value - Extracted value to display in tooltip
+ * @param {boolean} isHighlighted - Whether this box should be highlighted (from UI hover)
+ */
+const HighlightBox = ({ bbox, label, value, isHighlighted = false }) => {
+  if (!bbox || bbox.length !== 4) return null;
+
+  const [ymin, xmin, ymax, xmax] = bbox;
+
+  // Convert 0-1000 scale to CSS percentages
+  const style = {
+    top: `${ymin / 10}%`,
+    left: `${xmin / 10}%`,
+    width: `${(xmax - xmin) / 10}%`,
+    height: `${(ymax - ymin) / 10}%`,
+  };
+
+  return (
+    <div
+      className={`absolute border-2 transition-all cursor-pointer group z-10 ${
+        isHighlighted 
+          ? 'border-blue-600 bg-blue-400 bg-opacity-50 animate-pulse' 
+          : 'border-yellow-500 bg-yellow-300 bg-opacity-20 hover:bg-opacity-40'
+      }`}
+      style={style}
+    >
+      {/* Tooltip on Hover */}
+      <div className="hidden group-hover:block absolute bottom-full left-0 mb-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap z-20 shadow-lg">
+        <span className="font-bold">{label}:</span> {String(value)}
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Utility: Extract value from either structured or flat format
+ * Handles both new Gemini format {value, page, bbox} and old Mistral format (plain string/number)
+ * 
+ * @param {*} field - The field data (can be object with {value, page, bbox} or plain value)
+ * @returns {*} The extracted value or the field itself if already a plain value
+ */
+const getValue = (field) => {
+  if (field && typeof field === 'object' && 'value' in field) {
+    return field.value; // New Gemini structured format
+  }
+  return field; // Old flat format or null/undefined
+};
+
+/**
+ * Utility: Get page and bbox info from structured field
+ * @param {*} field - The field data
+ * @returns {Object|null} {page, bbox} or null if not available
+ */
+const getFieldInfo = (field) => {
+  if (field && typeof field === 'object' && 'page' in field && 'bbox' in field) {
+    return { page: field.page, bbox: field.bbox };
+  }
+  return null;
+};
+
+/**
+ * Utility: Recursively find all bounding boxes for a specific page
+ * This function traverses the entire JSON tree and finds all fields that have
+ * value, page, and bbox properties matching the given page number.
+ * 
+ * @param {Object} data - The extracted data object
+ * @param {number} pageNumber - The page number to filter by
+ * @returns {Array} Array of highlight objects with {id, bbox, label, value}
+ */
+const getHighlightsForPage = (data, pageNumber) => {
+  const highlights = [];
+
+  const traverse = (obj, keyName = '') => {
+    if (!obj || typeof obj !== 'object') return;
+
+    // Check if this object is a "Field with Location" (has value, page, bbox)
+    if (obj.page === pageNumber && Array.isArray(obj.bbox) && obj.bbox.length === 4) {
+      highlights.push({
+        id: keyName + Math.random(), // Unique ID for React key
+        bbox: obj.bbox,
+        label: keyName, // e.g., "fund_name"
+        value: obj.value
+      });
+    }
+
+    // Recursively check children
+    Object.keys(obj).forEach(key => {
+      // Skip metadata keys or pure values
+      if (key !== 'bbox' && key !== 'page' && key !== 'value') {
+        traverse(obj[key], key);
+      }
+    });
+  };
+
+  traverse(data);
+  return highlights;
+};
+
+/**
+ * DataField Component - Display/Edit field with hover functionality
+ * Moved outside Dashboard to prevent losing focus on input
+ */
+const DataField = ({ label, field, fieldName, editable, isEditMode, editedData, hoveredField, setHoveredField, updateEditedField }) => {
+  // Get the current value based on edit mode
+  const getCurrentValue = () => {
+    if (!isEditMode) return getValue(field);
+    
+    // Navigate through editedData using fieldName path
+    const keys = fieldName.split('.');
+    let current = editedData;
+    for (const key of keys) {
+      if (!current) return '';
+      current = current[key];
+    }
+    return getValue(current);
+  };
+  
+  const displayValue = getCurrentValue();
+  const info = getFieldInfo(field);
+  
+  const handleMouseEnter = () => {
+    if (info && !isEditMode) {
+      setHoveredField({ fieldName, page: info.page, bbox: info.bbox });
+    }
+  };
+  
+  const handleMouseLeave = () => {
+    setHoveredField(null);
+  };
+  
+  const isHovered = hoveredField?.fieldName === fieldName;
+  
+  if (isEditMode && editable) {
+    return (
+      <div>
+        <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</dt>
+        <dd className="mt-1">
+          <input
+            type="text"
+            value={displayValue || ''}
+            onChange={(e) => updateEditedField(fieldName, e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </dd>
+      </div>
+    );
+  }
+  
+  return (
+    <div>
+      <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</dt>
+      <dd 
+        className={`mt-1 text-sm text-gray-900 transition-all group ${
+          info ? 'cursor-pointer hover:bg-yellow-100 hover:shadow-sm px-2 py-1 -mx-2 -my-1 rounded' : ''
+        } ${isHovered ? 'bg-yellow-200 shadow-md' : ''}`}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        <span>{displayValue || 'N/A'}</span>
+        {info && (
+          <span className="ml-2 text-xs text-gray-500 italic font-normal opacity-0 group-hover:opacity-100 transition-opacity">
+            (Page {info.page})
+          </span>
+        )}
+      </dd>
+    </div>
+  );
+};
+
+/**
  * Dashboard Component - Professional Design with Tailwind CSS
  * Displays processed documents and their extracted data
  */
@@ -13,6 +185,10 @@ function Dashboard({ refreshTrigger }) {
   const [optimizedPages, setOptimizedPages] = useState(null);
   const [loadingPages, setLoadingPages] = useState(false);
   const [selectedPage, setSelectedPage] = useState(null);
+  const [hoveredField, setHoveredField] = useState(null); // {fieldName, page, bbox}
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editedData, setEditedData] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     loadDocuments();
@@ -104,6 +280,67 @@ function Dashboard({ refreshTrigger }) {
       console.error('Error deleting document:', error);
       alert('Failed to delete document');
     }
+  };
+
+  const handleEdit = () => {
+    setIsEditMode(true);
+    setEditedData(JSON.parse(JSON.stringify(selectedDoc.extracted_data))); // Deep copy
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditMode(false);
+    setEditedData(null);
+  };
+
+  const handleSave = async () => {
+    if (!editedData || !selectedDoc) return;
+
+    setIsSaving(true);
+    try {
+      // Update the document with new extracted data
+      const response = await api.updateDocument(selectedDoc.id, {
+        extracted_data: editedData
+      });
+      
+      // Update local state
+      setSelectedDoc({ ...selectedDoc, extracted_data: editedData });
+      setIsEditMode(false);
+      setEditedData(null);
+      
+      // Refresh document list
+      loadDocuments();
+      
+      alert('Changes saved successfully!');
+    } catch (error) {
+      console.error('Error saving changes:', error);
+      alert('Failed to save changes. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const updateEditedField = (fieldPath, value) => {
+    setEditedData(prevData => {
+      const newData = JSON.parse(JSON.stringify(prevData)); // Deep copy
+      const keys = fieldPath.split('.');
+      let current = newData;
+      
+      // Navigate to the parent of the target field
+      for (let i = 0; i < keys.length - 1; i++) {
+        if (!current[keys[i]]) current[keys[i]] = {};
+        current = current[keys[i]];
+      }
+      
+      // Update the field, preserving page and bbox if it's a structured field
+      const lastKey = keys[keys.length - 1];
+      if (current[lastKey] && typeof current[lastKey] === 'object' && 'value' in current[lastKey]) {
+        current[lastKey].value = value;
+      } else {
+        current[lastKey] = value;
+      }
+      
+      return newData;
+    });
   };
 
   const getStatusBadge = (status) => {
@@ -212,6 +449,50 @@ function Dashboard({ refreshTrigger }) {
                 <div className="flex justify-between items-center">
                   <h2 className="text-lg font-semibold text-gray-900">Dữ liệu trích xuất</h2>
                   <div className="flex gap-2">
+                    {selectedDoc.status === 'completed' && !isEditMode && (
+                      <button
+                        className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors flex items-center gap-1"
+                        onClick={handleEdit}
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                        Chỉnh sửa
+                      </button>
+                    )}
+                    {isEditMode && (
+                      <>
+                        <button
+                          className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 transition-colors flex items-center gap-1"
+                          onClick={handleSave}
+                          disabled={isSaving}
+                        >
+                          {isSaving ? (
+                            <>
+                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                              Đang lưu...
+                            </>
+                          ) : (
+                            <>
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                              Lưu
+                            </>
+                          )}
+                        </button>
+                        <button
+                          className="px-3 py-1.5 text-sm font-medium text-white bg-gray-500 rounded hover:bg-gray-600 disabled:bg-gray-300 transition-colors flex items-center gap-1"
+                          onClick={handleCancelEdit}
+                          disabled={isSaving}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                          Hủy
+                        </button>
+                      </>
+                    )}
                     {selectedDoc.status === 'failed' && (
                       <button
                         className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
@@ -251,9 +532,7 @@ function Dashboard({ refreshTrigger }) {
                           </div>
                         ) : optimizedPages ? (
                           <>
-                            <p className="text-sm text-gray-600 mb-4">
-                              Tổng số trang đã chọn: {optimizedPages.total_pages} / {optimizedPages.original_total || 'N/A'}
-                            </p>
+                
                             <div className="grid grid-cols-4 gap-3 max-h-96 overflow-y-auto">
                               {optimizedPages.pages.map((page) => (
                                 <div
@@ -261,11 +540,14 @@ function Dashboard({ refreshTrigger }) {
                                   className="relative border border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:shadow-md transition-all"
                                   onClick={() => setSelectedPage(page)}
                                 >
+                                  {/* Page Image */}
                                   <img
                                     src={page.image}
                                     alt={`Page ${page.page_number}`}
                                     className="w-full h-auto"
                                   />
+                                  
+                                  {/* Page Number Label */}
                                   <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-white text-xs py-1 text-center">
                                     Trang {page.page_number}
                                   </div>
@@ -283,22 +565,50 @@ function Dashboard({ refreshTrigger }) {
                     <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
                       <h3 className="text-base font-semibold text-gray-900 mb-4">Thông tin định danh</h3>
                       <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Tên quỹ</dt>
-                          <dd className="mt-1 text-sm text-gray-900">{selectedDoc.extracted_data.fund_name || 'N/A'}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Mã giao dịch</dt>
-                          <dd className="mt-1 text-sm text-gray-900">{selectedDoc.extracted_data.fund_code || 'N/A'}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Tên công ty quản lý quỹ</dt>
-                          <dd className="mt-1 text-sm text-gray-900">{selectedDoc.extracted_data.management_company || 'N/A'}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Ngân hàng giám sát</dt>
-                          <dd className="mt-1 text-sm text-gray-900">{selectedDoc.extracted_data.custodian_bank || 'N/A'}</dd>
-                        </div>
+                        <DataField 
+                          label="Tên quỹ" 
+                          field={selectedDoc.extracted_data.fund_name} 
+                          fieldName="fund_name"
+                          editable={true}
+                          isEditMode={isEditMode}
+                          editedData={editedData}
+                          hoveredField={hoveredField}
+                          setHoveredField={setHoveredField}
+                          updateEditedField={updateEditedField}
+                        />
+                        <DataField 
+                          label="Mã giao dịch" 
+                          field={selectedDoc.extracted_data.fund_code} 
+                          fieldName="fund_code"
+                          editable={true}
+                          isEditMode={isEditMode}
+                          editedData={editedData}
+                          hoveredField={hoveredField}
+                          setHoveredField={setHoveredField}
+                          updateEditedField={updateEditedField}
+                        />
+                        <DataField 
+                          label="Tên công ty quản lý quỹ" 
+                          field={selectedDoc.extracted_data.management_company} 
+                          fieldName="management_company"
+                          editable={true}
+                          isEditMode={isEditMode}
+                          editedData={editedData}
+                          hoveredField={hoveredField}
+                          setHoveredField={setHoveredField}
+                          updateEditedField={updateEditedField}
+                        />
+                        <DataField 
+                          label="Ngân hàng giám sát" 
+                          field={selectedDoc.extracted_data.custodian_bank} 
+                          fieldName="custodian_bank"
+                          editable={true}
+                          isEditMode={isEditMode}
+                          editedData={editedData}
+                          hoveredField={hoveredField}
+                          setHoveredField={setHoveredField}
+                          updateEditedField={updateEditedField}
+                        />
                       </dl>
                     </div>
 
@@ -307,29 +617,50 @@ function Dashboard({ refreshTrigger }) {
                       <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
                         <h3 className="text-base font-semibold text-gray-900 mb-4">Thông tin phí</h3>
                         <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {[
-                            { label: 'Phí phát hành', value: selectedDoc.extracted_data.fees?.subscription_fee || selectedDoc.extracted_data.fees_detail?.issue },
-                            { label: 'Phí mua lại', value: selectedDoc.extracted_data.fees?.redemption_fee || selectedDoc.extracted_data.fees_detail?.redemption },
-                            { label: 'Phí quản lý thường niên', value: selectedDoc.extracted_data.fees?.management_fee || selectedDoc.extracted_data.management_fee },
-                            { label: 'Phí chuyển đổi', value: selectedDoc.extracted_data.fees?.switching_fee || selectedDoc.extracted_data.fees_detail?.conversion }
-                          ].map((fee, idx) => (
-                            <div key={idx}>
-                              <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">{fee.label}</dt>
-                              <dd className="mt-1 text-sm text-gray-900">
-                                {(() => {
-                                  if (fee.value === null || fee.value === undefined || fee.value === '') return 'N/A';
-                                  if (typeof fee.value === 'number') return `${fee.value}%`;
-                                  if (typeof fee.value === 'string') {
-                                    if (fee.value.includes('%')) return fee.value;
-                                    // Check if it's a pure number string like "1.5"
-                                    if (!isNaN(parseFloat(fee.value)) && isFinite(fee.value)) return `${fee.value}%`;
-                                    return fee.value;
-                                  }
-                                  return fee.value;
-                                })()}
-                              </dd>
-                            </div>
-                          ))}
+                          <DataField 
+                            label="Phí phát hành" 
+                            field={selectedDoc.extracted_data.fees?.subscription_fee || selectedDoc.extracted_data.fees_detail?.issue} 
+                            fieldName="fees.subscription_fee"
+                            editable={true}
+                            isEditMode={isEditMode}
+                            editedData={editedData}
+                            hoveredField={hoveredField}
+                            setHoveredField={setHoveredField}
+                            updateEditedField={updateEditedField}
+                          />
+                          <DataField 
+                            label="Phí mua lại" 
+                            field={selectedDoc.extracted_data.fees?.redemption_fee || selectedDoc.extracted_data.fees_detail?.redemption} 
+                            fieldName="fees.redemption_fee"
+                            editable={true}
+                            isEditMode={isEditMode}
+                            editedData={editedData}
+                            hoveredField={hoveredField}
+                            setHoveredField={setHoveredField}
+                            updateEditedField={updateEditedField}
+                          />
+                          <DataField 
+                            label="Phí quản lý thường niên" 
+                            field={selectedDoc.extracted_data.fees?.management_fee || selectedDoc.extracted_data.management_fee} 
+                            fieldName="fees.management_fee"
+                            editable={true}
+                            isEditMode={isEditMode}
+                            editedData={editedData}
+                            hoveredField={hoveredField}
+                            setHoveredField={setHoveredField}
+                            updateEditedField={updateEditedField}
+                          />
+                          <DataField 
+                            label="Phí chuyển đổi" 
+                            field={selectedDoc.extracted_data.fees?.switching_fee || selectedDoc.extracted_data.fees_detail?.conversion} 
+                            fieldName="fees.switching_fee"
+                            editable={true}
+                            isEditMode={isEditMode}
+                            editedData={editedData}
+                            hoveredField={hoveredField}
+                            setHoveredField={setHoveredField}
+                            updateEditedField={updateEditedField}
+                          />
                         </dl>
                       </div>
                     )}
@@ -354,10 +685,10 @@ function Dashboard({ refreshTrigger }) {
                               {selectedDoc.extracted_data.portfolio.map((item, index) => (
                                 <tr key={index} className="hover:bg-gray-50">
                                   <td className="px-4 py-3 text-sm text-gray-900">
-                                    {item.security_name || item.asset_name || 'N/A'}
+                                    {getValue(item.security_name) || getValue(item.asset_name) || 'N/A'}
                                   </td>
                                   <td className="px-4 py-3 text-sm text-gray-900">
-                                    {item.percentage ? `${item.percentage}%` : (item.weight || 'N/A')}
+                                    {getValue(item.percentage) ? `${getValue(item.percentage)}%` : (getValue(item.weight) || 'N/A')}
                                   </td>
                                 </tr>
                               ))}
@@ -389,10 +720,10 @@ function Dashboard({ refreshTrigger }) {
                               {selectedDoc.extracted_data.nav_history.map((item, index) => (
                                 <tr key={index} className="hover:bg-gray-50">
                                   <td className="px-4 py-3 text-sm text-gray-900">
-                                    {item.date || item.period || 'N/A'}
+                                    {getValue(item.date) || getValue(item.period) || 'N/A'}
                                   </td>
                                   <td className="px-4 py-3 text-sm text-gray-900">
-                                    {item.nav_per_unit || item.value || 'N/A'}
+                                    {getValue(item.nav_per_unit) || getValue(item.value) || 'N/A'}
                                   </td>
                                 </tr>
                               ))}
@@ -426,9 +757,9 @@ function Dashboard({ refreshTrigger }) {
                             <tbody className="bg-white divide-y divide-gray-200">
                               {selectedDoc.extracted_data.dividend_history.map((item, index) => (
                                 <tr key={index} className="hover:bg-gray-50">
-                                  <td className="px-4 py-3 text-sm text-gray-900">{item.date || 'N/A'}</td>
-                                  <td className="px-4 py-3 text-sm text-gray-900">{item.dividend_per_unit || 'N/A'}</td>
-                                  <td className="px-4 py-3 text-sm text-gray-900">{item.payment_date || 'N/A'}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-900">{getValue(item.date) || 'N/A'}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-900">{getValue(item.dividend_per_unit) || 'N/A'}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-900">{getValue(item.payment_date) || 'N/A'}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -445,49 +776,6 @@ function Dashboard({ refreshTrigger }) {
                       <pre className="bg-white p-4 rounded border border-gray-200 overflow-x-auto text-xs text-gray-800">
                         {JSON.stringify(selectedDoc.extracted_data, null, 2)}
                       </pre>
-                    </div>
-
-                    {/* PDF Viewer */}
-                    <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                      <h3 className="text-base font-semibold text-gray-900 mb-4">Xem trước tài liệu</h3>
-                      <div className="flex gap-4 mb-4">
-                        {selectedDoc.file_url && (
-                          <a 
-                            href={selectedDoc.file_url} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:underline text-sm"
-                          >
-                            Xem file gốc
-                          </a>
-                        )}
-                        {selectedDoc.optimized_file_url && (
-                          <a 
-                            href={selectedDoc.optimized_file_url} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-green-600 hover:underline text-sm font-medium"
-                          >
-                            Xem file đã tối ưu (RapidOCR)
-                          </a>
-                        )}
-                      </div>
-
-                      {selectedDoc.optimized_file_url ? (
-                        <iframe
-                          src={selectedDoc.optimized_file_url}
-                          title="Optimized PDF Preview"
-                          className="w-full h-96 border border-gray-200 rounded"
-                        />
-                      ) : selectedDoc.file_url ? (
-                        <iframe
-                          src={selectedDoc.file_url}
-                          title="PDF Preview"
-                          className="w-full h-96 border border-gray-200 rounded"
-                        />
-                      ) : (
-                        <p className="text-gray-500">Preview not available</p>
-                      )}
                     </div>
                   </div>
                 ) : selectedDoc.status === 'failed' ? (
@@ -517,9 +805,13 @@ function Dashboard({ refreshTrigger }) {
           className="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4"
           onClick={() => setSelectedPage(null)}
         >
-          <div className="relative max-w-4xl max-h-[90vh] bg-white rounded-lg overflow-hidden">
-            <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Trang {selectedPage.page_number}</h3>
+          <div className="relative max-w-4xl max-h-[90vh] bg-white rounded-lg overflow-hidden flex flex-col">
+            
+            {/* Header */}
+            <div className="bg-white border-b border-gray-200 px-4 py-3 flex justify-between items-center z-20">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Preview: Page {selectedPage.page_number}
+              </h3>
               <button
                 onClick={() => setSelectedPage(null)}
                 className="text-gray-500 hover:text-gray-700"
@@ -529,13 +821,44 @@ function Dashboard({ refreshTrigger }) {
                 </svg>
               </button>
             </div>
-            <div className="overflow-auto max-h-[calc(90vh-60px)]">
-              <img
-                src={selectedPage.image}
-                alt={`Page ${selectedPage.page_number}`}
-                className="w-full h-auto"
-                onClick={(e) => e.stopPropagation()}
-              />
+
+            {/* Image Container with Relative Positioning */}
+            <div className="relative overflow-auto flex-1 bg-gray-100 p-4 flex justify-center">
+              
+              {/* Wrapper div needs "relative" so absolute children align to it */}
+              <div 
+                className="relative inline-block shadow-lg"
+                style={{ width: '90%' }}
+                onClick={(e) => e.stopPropagation()} // Prevent clicking image from closing modal
+              >
+                {/* 1. The Optimized Page Image */}
+                <img
+                  src={selectedPage.image}
+                  alt={`Page ${selectedPage.page_number}`}
+                  className="w-full h-auto block" 
+                  // 'block' removes bottom spacing issues
+                />
+
+                {/* 2. The Annotation Overlay */}
+                {selectedDoc?.extracted_data && 
+                  getHighlightsForPage(selectedDoc.extracted_data, selectedPage.page_number)
+                    .map((hl) => {
+                      const isHighlighted = hoveredField && 
+                                          hoveredField.page === selectedPage.page_number &&
+                                          JSON.stringify(hoveredField.bbox) === JSON.stringify(hl.bbox);
+                      return (
+                        <HighlightBox 
+                          key={hl.id} 
+                          bbox={hl.bbox} 
+                          label={hl.label}
+                          value={hl.value}
+                          isHighlighted={isHighlighted}
+                        />
+                      );
+                    })
+                }
+              </div>
+
             </div>
           </div>
         </div>

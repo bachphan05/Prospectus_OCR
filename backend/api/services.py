@@ -287,9 +287,11 @@ class GeminiOCRService:
             prompt = self._get_extraction_prompt()
             
             try:
-                # Use temperature=0 for deterministic, consistent results
+                # Use temperature=0 and top_p=0 for maximum deterministic, consistent results
                 generation_config = genai.types.GenerationConfig(
                     temperature=0,
+                    top_p=0.1,
+                    top_k=1,
                     response_mime_type="application/json"
                 )
                 response = self.model.generate_content(
@@ -321,26 +323,33 @@ class GeminiOCRService:
             raise
     
     def _get_extraction_schema(self) -> dict:
-        """Define the expected JSON schema for extraction"""
+        """Define the expected JSON schema with Bounding Boxes"""
+        
+        # Define a reusable definition for a field containing value + location
+        # logic: 0-1000 scale for coordinates [ymin, xmin, ymax, xmax]
+        field_with_loc = {
+            "type": "object",
+            "properties": {
+                "value": {"type": ["string", "number", "null"]},
+                "page": {"type": "integer", "description": "Page number in the file (1-based)"},
+                "bbox": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "[ymin, xmin, ymax, xmax] on 0-1000 scale"
+                }
+            }
+        }
+
         return {
             "type": "object",
             "properties": {
-                "fund_name": {
-                    "type": "string",
-                    "description": "Full name of the investment fund"
-                },
-                "fund_code": {
-                    "type": "string",
-                    "description": "Unique identifier/code for the fund"
-                },
-                "management_company": {
-                    "type": "string",
-                    "description": "Name of the fund management company"
-                },
-                "custodian_bank": {
-                    "type": "string",
-                    "description": "Name of the custodian bank"
-                },
+                # Update simple fields to use the new object structure
+                "fund_name": field_with_loc,
+                "fund_code": field_with_loc,
+                "management_company": field_with_loc,
+                "custodian_bank": field_with_loc,
                 "inception_date": {
                     "type": "string",
                     "format": "date",
@@ -350,27 +359,18 @@ class GeminiOCRService:
                     "type": "string",
                     "description": "Main investment objective of the fund"
                 },
+                
+                # Fees object with location for each fee type
                 "fees": {
                     "type": "object",
                     "properties": {
-                        "management_fee": {
-                            "type": "string",
-                            "description": "Annual management fee (e.g. '2%', '1.5%/năm')"
-                        },
-                        "subscription_fee": {
-                            "type": "string",
-                            "description": "Fee for buying/subscribing units (e.g. '1%', 'Miễn phí'). Synonyms: Phí phát hành, Phí mua, Phí đăng ký mua."
-                        },
-                        "redemption_fee": {
-                            "type": "string",
-                            "description": "Fee for selling/redeeming units (e.g. '0.5%', 'Theo thời gian nắm giữ'). Synonyms: Phí mua lại, Phí bán, Phí rút vốn."
-                        },
-                        "switching_fee": {
-                            "type": "string",
-                            "description": "Fee for switching between funds"
-                        }
+                        "management_fee": field_with_loc,
+                        "subscription_fee": field_with_loc,
+                        "redemption_fee": field_with_loc,
+                        "switching_fee": field_with_loc
                     }
                 },
+                
                 "minimum_investment": {
                     "type": "object",
                     "properties": {
@@ -388,20 +388,34 @@ class GeminiOCRService:
                         }
                     }
                 },
+                
+                # Arrays with location for each row
                 "portfolio": {
                     "type": "array",
                     "description": "Top portfolio holdings",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "security_name": {"type": "string"},
-                            "security_code": {"type": "string"},
-                            "asset_type": {"type": "string"},
-                            "market_value": {"type": "number"},
-                            "percentage": {"type": "number"}
+                            "security_name": field_with_loc,
+                            "security_code": field_with_loc,
+                            "asset_type": field_with_loc,
+                            "market_value": field_with_loc,
+                            "percentage": field_with_loc,
+                            "row_bbox": {
+                                "type": "object",
+                                "properties": {
+                                    "page": {"type": "integer"},
+                                    "bbox": {
+                                        "type": "array",
+                                        "items": {"type": "integer"},
+                                        "description": "Bounding box for the whole table row"
+                                    }
+                                }
+                            }
                         }
                     }
                 },
+                
                 "asset_allocation": {
                     "type": "object",
                     "description": "Asset allocation percentages",
@@ -412,29 +426,46 @@ class GeminiOCRService:
                         "other": {"type": "number"}
                     }
                 },
+                
                 "nav_history": {
                     "type": "array",
-                    "description": "Recent NAV (Net Asset Value) history - Lịch sử giá trị tài sản ròng (NAV) qua các kỳ",
+                    "description": "Recent NAV (Net Asset Value) history",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "date": {"type": "string", "format": "date", "description": "Date in YYYY-MM-DD format"},
-                            "nav_per_unit": {"type": "number", "description": "NAV per unit value"}
+                            "date": field_with_loc,
+                            "nav_per_unit": field_with_loc,
+                            "row_bbox": {
+                                "type": "object",
+                                "properties": {
+                                    "page": {"type": "integer"},
+                                    "bbox": {"type": "array", "items": {"type": "integer"}}
+                                }
+                            }
                         }
                     }
                 },
+                
                 "dividend_history": {
                     "type": "array",
-                    "description": "Dividend distribution history - Lịch sử chia cổ tức",
+                    "description": "Dividend distribution history",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "date": {"type": "string", "format": "date"},
-                            "dividend_per_unit": {"type": "number"},
-                            "payment_date": {"type": "string", "format": "date"}
+                            "date": field_with_loc,
+                            "dividend_per_unit": field_with_loc,
+                            "payment_date": field_with_loc,
+                            "row_bbox": {
+                                "type": "object",
+                                "properties": {
+                                    "page": {"type": "integer"},
+                                    "bbox": {"type": "array", "items": {"type": "integer"}}
+                                }
+                            }
                         }
                     }
                 },
+                
                 "performance": {
                     "type": "object",
                     "description": "Fund performance metrics",
@@ -463,20 +494,96 @@ class GeminiOCRService:
         
         return f"""You are an expert financial document analyst specializing in Vietnamese investment fund prospectuses.
 
+
 Extract ALL relevant financial information from this prospectus document and structure it according to the following JSON schema:
 
 {json.dumps(schema, indent=2)}
 
+### CRITICAL: STRUCTURED DATA WITH BOUNDING BOXES ###
+
+**IMPORTANT**: For every field, return an object with {{ "value": "...", "page": N, "bbox": [ymin, xmin, ymax, xmax] }}.
+
+**Coordinate System**: Use a 0-1000 scale where:
+  - (0, 0) is the TOP-LEFT corner of the page
+  - (1000, 1000) is the BOTTOM-RIGHT corner
+  - ymin: distance from top edge to top of text box
+  - xmin: distance from left edge to left of text box
+  - ymax: distance from top edge to bottom of text box
+  - xmax: distance from left edge to right of text box
+
+**Example Structure**:
+If "Quỹ Đầu Tư Cân Bằng VCBF" appears on page 1 at the top-center:
+```json
+"fund_name": {{
+  "value": "Quỹ Đầu Tư Cân Bằng VCBF",
+  "page": 1,
+  "bbox": [100, 300, 150, 700]
+}}
+```
+
+For fees, each fee type should be a structured object:
+```json
+"fees": {{
+  "subscription_fee": {{
+    "value": "5,0%",
+    "page": 3,
+    "bbox": [250, 150, 280, 350]
+  }},
+  "redemption_fee": {{
+    "value": "N/A",
+    "page": 3,
+    "bbox": [290, 150, 320, 350]
+  }},
+  "management_fee": {{
+    "value": "Tối đa 1,5%/năm",
+    "page": 3,
+    "bbox": [330, 150, 360, 600]
+  }},
+  "switching_fee": {{
+    "value": "1,5%",
+    "page": 3,
+    "bbox": [370, 150, 400, 350]
+  }}
+}}
+```
+
+For table rows (portfolio, nav_history, dividend_history), each cell should be a structured object:
+```json
+"portfolio": [
+  {{
+    "security_name": {{
+      "value": "Vingroup JSC",
+      "page": 5,
+      "bbox": [100, 50, 130, 300]
+    }},
+    "security_code": {{
+      "value": "VIC",
+      "page": 5,
+      "bbox": [100, 310, 130, 400]
+    }},
+    "percentage": {{
+      "value": 8.5,
+      "page": 5,
+      "bbox": [100, 750, 130, 900]
+    }},
+    "row_bbox": {{
+      "page": 5,
+      "bbox": [100, 50, 130, 950]
+    }}
+  }}
+]
+```
+
 IMPORTANT INSTRUCTIONS:
 1. Extract data EXACTLY as it appears in the document
 2. For Vietnamese text, preserve diacritical marks (ả, ế, ô, etc.)
-3. For fees, extract the full text value including percentage sign if present (e.g., "2.5%", "Miễn phí").
+3. For fees, extract the full text value including percentage sign if present (e.g., "2.5%", "Miễn phí")
 4. For currency amounts, extract as numbers without formatting (e.g., "1,000,000 VND" → 1000000)
 5. For dates, use ISO format YYYY-MM-DD
-6. If a field is not found, use null (not empty string)
-7. For portfolio holdings, extract the top 10-15 holdings if available. Look for tables labeled "Danh mục đầu tư", "Cơ cấu tài sản", "Top 10 cổ phiếu", or similar.
-8. For NAV history, extract the most recent 10-20 entries if available. Look for tables labeled "Giá trị tài sản ròng", "NAV", "Biến động NAV".
-9. For Dividend history, look for "Lịch sử chia cổ tức", "Phân phối lợi nhuận".
+6. If a field is not found, set value to null and omit bbox
+7. For portfolio holdings, extract ALL available items
+8. For NAV history, extract the most recent 10-20 entries if available
+9. For Dividend history, look for "Lịch sử chia cổ tức", "Phân phối lợi nhuận"
 10. Pay special attention to:
    - Fee structures (management, subscription, redemption fees)
    - Minimum investment requirements
@@ -485,21 +592,40 @@ IMPORTANT INSTRUCTIONS:
    - Risk classifications
 
 ### CRITICAL INSTRUCTIONS FOR FEE EXTRACTION:
-1. **Search the ENTIRE document** for fee information, typically found in:
-   - Section titled "Biểu phí" or "Các loại phí"
-   - "Phí và chi phí" section
-   - Tables showing different fee types
-2. **Common fee terminology (use these to find fees)**:
-   - Management Fee (Phí quản lý): Usually "X%/năm" or "Tối đa X%/năm"
-   - Subscription/Issue Fee (Phí phát hành/Phí mua/Phí đăng ký): Often shown as "%" or "Miễn phí"
-   - Redemption/Exit Fee (Phí mua lại/Phí bán/Phí rút vốn): May vary by holding period
-   - Switching Fee (Phí chuyển đổi): Between different fund classes
-3. **Extract ALL fee values found**, even if they are:
-   - Ranges ("0.5% - 1%")
-   - Conditional ("Theo thời gian nắm giữ")
-   - Text descriptions ("Miễn phí", "Không thu")
-   - Formulas ("Tối đa 1.5%/năm")
-4. **Do NOT skip fees** - if you see any fee mentioned, extract it
+**YOU MUST EXTRACT ALL 4 FEE TYPES as structured objects with value, page, and bbox.**
+
+Look in sections titled "Thông tin phí", "Biểu phí", or "Các loại phí".
+
+1. **PHÍ PHÁT HÀNH** (Subscription/Issue Fee):
+   - Also called: "Phí mua", "Phí đăng ký mua", "Phí giao dịch mua"
+   - Usually shown as a percentage like "5,0%" or "5.0%" or "Miễn phí"
+   - Map this to: `subscription_fee`
+   - Example: {{"value": "5,0%", "page": 3, "bbox": [...]}}
+
+2. **PHÍ MUA LẠI** (Redemption/Exit Fee):
+   - Also called: "Phí bán", "Phí rút vốn", "Phí giao dịch bán"
+   - May say "N/A", "Không áp dụng", or show percentage
+   - Map this to: `redemption_fee`
+   - Example: {{"value": "N/A", "page": 3, "bbox": [...]}}
+
+3. **PHÍ QUẢN LÝ THƯỜNG NIÊN** (Management Fee):
+   - Also called: "Phí quản lý quỹ", "Phí quản lý hàng năm"
+   - Usually shown as: "Tối đa X%/năm" or "X% một năm"
+   - Map this to: `management_fee`
+   - Example: {{"value": "Tối đa 1,5%/năm", "page": 3, "bbox": [...]}}
+
+4. **PHÍ CHUYỂN ĐỔI** (Switching Fee):
+   - Fee for converting between fund types
+   - May say "N/A" if not applicable
+   - Map this to: `switching_fee`
+   - Example: {{"value": "N/A", "page": 3, "bbox": [...]}}
+
+**EXTRACTION RULES:**
+- If you see "N/A" in the document, extract it as "N/A" (not null)
+- If a fee is truly not mentioned anywhere, use {{"value": null, "page": null, "bbox": null}}
+- Extract the EXACT text including "%" sign, "Tối đa", commas, etc.
+- Don't convert "5,0%" to "5.0%" - keep original formatting
+- Look in tables, text sections, and fee schedules
 
 ### CRITICAL INSTRUCTIONS FOR TABLES (Danh mục đầu tư, NAV, Cổ tức):
 1. **Detect Table Boundaries**: Financial tables (Portfolio, NAV) often span multiple pages WITHOUT repeating headers. Treat consecutive pages with tabular data as a single continuous table.
@@ -507,35 +633,19 @@ IMPORTANT INSTRUCTIONS:
 3. **Portfolio (Danh mục đầu tư)**:
    - Extract ALL items available, do not limit to top 10 unless the document explicitly says "Top 10".
    - Look for columns like "Mã CK" (Code), "Tên CK" (Name), "Tỷ trọng" (Weight/%), "Giá trị" (Value).
-   - If "Mã CK" is missing but "Tên CK" exists, map "Tên CK" to security_name.
+   - Each cell should be a structured object with value, page, bbox
 4. **NAV History (Giá trị tài sản ròng)**:
    - Extract the table usually labeled "Biến động giá trị tài sản ròng" or "Lịch sử NAV".
    - Keys: Date (Ngày), NAV/Unit (Giá trị một ccq).
+   - Each cell should be a structured object
 5. **Dividend History (Lịch sử chia cổ tức)**:
    - Look for keywords: "Chi trả cổ tức", "Phân phối lợi nhuận".
    - If the fund says "No dividend distributed" (Không chia cổ tức), return an empty array [].
-Return ONLY valid JSON matching the schema above. Do not include any explanatory text before or after the JSON.
 
-Example of expected output format:
-{{
-  "fund_name": "Quỹ Đầu Tư Cân Bằng VCBF",
-  "fund_code": "VCBF-TBF",
-  "management_company": "VCBF",
-  "custodian_bank": "Vietcombank",
-  "fees": {{
-    "management_fee": "Tối đa 1.5%/năm",
-    "subscription_fee": "1.5%",
-    "redemption_fee": "Miễn phí"
-  }},
-  "portfolio": [
-    {{
-      "security_name": "Vingroup JSC",
-      "security_code": "VIC",
-      "asset_type": "Stock",
-      "percentage": 8.5
-    }}
-  ]
-}}
+### CRITICAL: You MUST provide CONSISTENT and DETERMINISTIC results ###
+Always extract the same data from the same document. Do not vary your responses.
+
+Return ONLY valid JSON matching the schema above. Do not include any explanatory text before or after the JSON.
 
 Now extract the data from the provided document."""
 
@@ -929,16 +1039,26 @@ class DocumentProcessingService:
             
             # Normalize data - extract fees from nested structure if present
             fees_obj = extracted_data.get('fees', {})
-            if isinstance(fees_obj, dict):
+            
+            # Handle case where fees might be a list instead of dict (API error)
+            if isinstance(fees_obj, list):
+                logger.warning(f"Fees returned as list instead of dict: {fees_obj}")
+                fees_obj = {}
+            
+            if isinstance(fees_obj, dict) and fees_obj:
                 management_fee = fees_obj.get('management_fee')
                 subscription_fee = fees_obj.get('subscription_fee')
                 redemption_fee = fees_obj.get('redemption_fee')
                 switching_fee = fees_obj.get('switching_fee')
             else:
+                # Fallback to top-level fields
                 management_fee = extracted_data.get('management_fee')
                 subscription_fee = extracted_data.get('subscription_fee')
                 redemption_fee = extracted_data.get('redemption_fee')
                 switching_fee = extracted_data.get('switching_fee')
+            
+            # Log extracted fees for debugging
+            logger.info(f"Extracted Fees - Management: {management_fee}, Subscription: {subscription_fee}, Redemption: {redemption_fee}, Switching: {switching_fee}")
 
             # Ensure array fields are never null
             portfolio_value = extracted_data.get('portfolio')
@@ -966,17 +1086,24 @@ class DocumentProcessingService:
             # Update the document's extracted_data with the sanitized values
             document.extracted_data = extracted_data
 
+            # Helper function to extract value from either structured or flat format
+            def get_value(field_data):
+                """Extract value from either {value, page, bbox} object or plain string/number"""
+                if isinstance(field_data, dict) and 'value' in field_data:
+                    return field_data['value']  # New Gemini structured format
+                return field_data  # Old flat format (Mistral or legacy data)
+
             ExtractedFundData.objects.update_or_create(
                 document=document,
                 defaults={
-                    'fund_name': extracted_data.get('fund_name'),
-                    'fund_code': extracted_data.get('fund_code'),
-                    'management_company': extracted_data.get('management_company'),
-                    'custodian_bank': extracted_data.get('custodian_bank'), #Ngân hàng lưu ký
-                    'management_fee': str(management_fee) if management_fee is not None else None,
-                    'subscription_fee': str(subscription_fee) if subscription_fee is not None else None,
-                    'redemption_fee': str(redemption_fee) if redemption_fee is not None else None,
-                    'switching_fee': str(switching_fee) if switching_fee is not None else None,
+                    'fund_name': get_value(extracted_data.get('fund_name')),
+                    'fund_code': get_value(extracted_data.get('fund_code')),
+                    'management_company': get_value(extracted_data.get('management_company')),
+                    'custodian_bank': get_value(extracted_data.get('custodian_bank')),
+                    'management_fee': str(get_value(management_fee)) if management_fee is not None else None,
+                    'subscription_fee': str(get_value(subscription_fee)) if subscription_fee is not None else None,
+                    'redemption_fee': str(get_value(redemption_fee)) if redemption_fee is not None else None,
+                    'switching_fee': str(get_value(switching_fee)) if switching_fee is not None else None,
                     'portfolio': portfolio_value,
                     'nav_history': nav_history_value,
                     'dividend_history': dividend_history_value,

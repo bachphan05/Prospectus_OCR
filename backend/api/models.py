@@ -75,16 +75,19 @@ class ExtractedFundData(models.Model):
     management_company = models.CharField(max_length=500, blank=True, null=True)
     custodian_bank = models.CharField(max_length=300, blank=True, null=True)
     
-    # Fee information
-    management_fee = models.CharField(max_length=200, blank=True, null=True)
-    subscription_fee = models.CharField(max_length=200, blank=True, null=True)
-    redemption_fee = models.CharField(max_length=200, blank=True, null=True)
-    switching_fee = models.CharField(max_length=200, blank=True, null=True)
+    # Fee information (increased length to handle longer Vietnamese descriptions)
+    management_fee = models.CharField(max_length=500, blank=True, null=True)
+    subscription_fee = models.CharField(max_length=500, blank=True, null=True)
+    redemption_fee = models.CharField(max_length=500, blank=True, null=True)
+    switching_fee = models.CharField(max_length=500, blank=True, null=True)
     
     # Portfolio and table data (stored as JSON arrays)
     portfolio = models.JSONField(default=list, blank=True)
     nav_history = models.JSONField(default=list, blank=True)
     dividend_history = models.JSONField(default=list, blank=True)
+    
+    # Bounding boxes for extracted fields (for PDF highlighting)
+    bboxes = models.JSONField(default=dict, blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

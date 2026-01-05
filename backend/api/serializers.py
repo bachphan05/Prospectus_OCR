@@ -39,7 +39,7 @@ class DocumentSerializer(serializers.ModelSerializer):
             'file_url',
             'optimized_file_url'
         ]
-        read_only_fields = ['uploaded_at', 'processed_at', 'status', 'extracted_data', 'confidence_score', 'fund_data']
+        read_only_fields = ['uploaded_at', 'processed_at', 'status', 'confidence_score', 'fund_data']
     
     def get_file_url(self, obj):
         """Get the full URL for the uploaded file"""

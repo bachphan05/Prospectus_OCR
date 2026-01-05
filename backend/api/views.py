@@ -81,6 +81,54 @@ class DocumentViewSet(viewsets.ModelViewSet):
         serializer = DocumentSerializer(instance, context={'request': request})
         return Response(serializer.data)
     
+    def update(self, request, *args, **kwargs):
+        """Update document - supports updating extracted_data"""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        
+        # If extracted_data was updated, sync with ExtractedFundData
+        if 'extracted_data' in request.data:
+            try:
+                from .services import DocumentProcessingService
+                # Re-sync the structured data
+                extracted_data = instance.extracted_data
+                
+                # Helper to get value from structured or flat format
+                def get_value(field_data):
+                    if isinstance(field_data, dict) and 'value' in field_data:
+                        return field_data['value']
+                    return field_data
+                
+                # Update ExtractedFundData
+                ExtractedFundData.objects.update_or_create(
+                    document=instance,
+                    defaults={
+                        'fund_name': get_value(extracted_data.get('fund_name')),
+                        'fund_code': get_value(extracted_data.get('fund_code')),
+                        'management_company': get_value(extracted_data.get('management_company')),
+                        'custodian_bank': get_value(extracted_data.get('custodian_bank')),
+                        'management_fee': str(get_value(extracted_data.get('fees', {}).get('management_fee'))) if extracted_data.get('fees', {}).get('management_fee') else None,
+                        'subscription_fee': str(get_value(extracted_data.get('fees', {}).get('subscription_fee'))) if extracted_data.get('fees', {}).get('subscription_fee') else None,
+                        'redemption_fee': str(get_value(extracted_data.get('fees', {}).get('redemption_fee'))) if extracted_data.get('fees', {}).get('redemption_fee') else None,
+                        'switching_fee': str(get_value(extracted_data.get('fees', {}).get('switching_fee'))) if extracted_data.get('fees', {}).get('switching_fee') else None,
+                        'portfolio': extracted_data.get('portfolio', []),
+                        'nav_history': extracted_data.get('nav_history', []),
+                        'dividend_history': extracted_data.get('dividend_history', []),
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Error syncing ExtractedFundData: {e}")
+        
+        return Response(serializer.data)
+    
+    def partial_update(self, request, *args, **kwargs):
+        """Partial update (PATCH)"""
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+    
     @action(detail=True, methods=['post'])
     def reprocess(self, request, pk=None):
         """
