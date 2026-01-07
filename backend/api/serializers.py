@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Document, ExtractedFundData
+from .models import Document, ExtractedFundData, DocumentChangeLog
 
 
 class ExtractedFundDataSerializer(serializers.ModelSerializer):
@@ -14,6 +14,15 @@ class ExtractedFundDataSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+
+class DocumentChangeLogSerializer(serializers.ModelSerializer):
+    """Serializer for document change logs"""
+    
+    class Meta:
+        model = DocumentChangeLog
+        fields = ['id', 'document', 'changed_at', 'user_comment', 'changes']
+        read_only_fields = ['id', 'document', 'changed_at']
 
 
 class DocumentSerializer(serializers.ModelSerializer):
@@ -37,9 +46,11 @@ class DocumentSerializer(serializers.ModelSerializer):
             'confidence_score',
             'fund_data',
             'file_url',
-            'optimized_file_url'
+            'optimized_file_url',
+            'edit_count',
+            'last_edited_at'
         ]
-        read_only_fields = ['uploaded_at', 'processed_at', 'status', 'confidence_score', 'fund_data']
+        read_only_fields = ['uploaded_at', 'processed_at', 'status', 'confidence_score', 'fund_data', 'edit_count', 'last_edited_at']
     
     def get_file_url(self, obj):
         """Get the full URL for the uploaded file"""
@@ -100,8 +111,8 @@ class DocumentListSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Document
-        fields = ['id', 'file_name', 'uploaded_at', 'status', 'fund_name', 'fund_code']
-        read_only_fields = ['id', 'file_name', 'uploaded_at', 'status']
+        fields = ['id', 'file_name', 'uploaded_at', 'status', 'fund_name', 'fund_code', 'edit_count', 'last_edited_at']
+        read_only_fields = ['id', 'file_name', 'uploaded_at', 'status', 'edit_count', 'last_edited_at']
     
     def get_fund_name(self, obj):
         """Get fund name from related fund_data or extracted_data"""

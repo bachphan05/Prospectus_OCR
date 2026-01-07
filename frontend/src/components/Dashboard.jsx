@@ -1,177 +1,14 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
-
-/**
- * HighlightBox Component - Renders a highlighted bounding box overlay with tooltip
- * @param {Array} bbox - Bounding box [ymin, xmin, ymax, xmax] in 0-1000 scale
- * @param {string} label - Field name/label
- * @param {*} value - Extracted value to display in tooltip
- * @param {boolean} isHighlighted - Whether this box should be highlighted (from UI hover)
- */
-const HighlightBox = ({ bbox, label, value, isHighlighted = false }) => {
-  if (!bbox || bbox.length !== 4) return null;
-
-  const [ymin, xmin, ymax, xmax] = bbox;
-
-  // Convert 0-1000 scale to CSS percentages
-  const style = {
-    top: `${ymin / 10}%`,
-    left: `${xmin / 10}%`,
-    width: `${(xmax - xmin) / 10}%`,
-    height: `${(ymax - ymin) / 10}%`,
-  };
-
-  return (
-    <div
-      className={`absolute border-2 transition-all cursor-pointer group z-10 ${
-        isHighlighted 
-          ? 'border-blue-600 bg-blue-400 bg-opacity-50 animate-pulse' 
-          : 'border-yellow-500 bg-yellow-300 bg-opacity-20 hover:bg-opacity-40'
-      }`}
-      style={style}
-    >
-      {/* Tooltip on Hover */}
-      <div className="hidden group-hover:block absolute bottom-full left-0 mb-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap z-20 shadow-lg">
-        <span className="font-bold">{label}:</span> {String(value)}
-      </div>
-    </div>
-  );
-};
-
-/**
- * Utility: Extract value from either structured or flat format
- * Handles both new Gemini format {value, page, bbox} and old Mistral format (plain string/number)
- * 
- * @param {*} field - The field data (can be object with {value, page, bbox} or plain value)
- * @returns {*} The extracted value or the field itself if already a plain value
- */
-const getValue = (field) => {
-  if (field && typeof field === 'object' && 'value' in field) {
-    return field.value; // New Gemini structured format
-  }
-  return field; // Old flat format or null/undefined
-};
-
-/**
- * Utility: Get page and bbox info from structured field
- * @param {*} field - The field data
- * @returns {Object|null} {page, bbox} or null if not available
- */
-const getFieldInfo = (field) => {
-  if (field && typeof field === 'object' && 'page' in field && 'bbox' in field) {
-    return { page: field.page, bbox: field.bbox };
-  }
-  return null;
-};
-
-/**
- * Utility: Recursively find all bounding boxes for a specific page
- * This function traverses the entire JSON tree and finds all fields that have
- * value, page, and bbox properties matching the given page number.
- * 
- * @param {Object} data - The extracted data object
- * @param {number} pageNumber - The page number to filter by
- * @returns {Array} Array of highlight objects with {id, bbox, label, value}
- */
-const getHighlightsForPage = (data, pageNumber) => {
-  const highlights = [];
-
-  const traverse = (obj, keyName = '') => {
-    if (!obj || typeof obj !== 'object') return;
-
-    // Check if this object is a "Field with Location" (has value, page, bbox)
-    if (obj.page === pageNumber && Array.isArray(obj.bbox) && obj.bbox.length === 4) {
-      highlights.push({
-        id: keyName + Math.random(), // Unique ID for React key
-        bbox: obj.bbox,
-        label: keyName, // e.g., "fund_name"
-        value: obj.value
-      });
-    }
-
-    // Recursively check children
-    Object.keys(obj).forEach(key => {
-      // Skip metadata keys or pure values
-      if (key !== 'bbox' && key !== 'page' && key !== 'value') {
-        traverse(obj[key], key);
-      }
-    });
-  };
-
-  traverse(data);
-  return highlights;
-};
-
-/**
- * DataField Component - Display/Edit field with hover functionality
- * Moved outside Dashboard to prevent losing focus on input
- */
-const DataField = ({ label, field, fieldName, editable, isEditMode, editedData, hoveredField, setHoveredField, updateEditedField }) => {
-  // Get the current value based on edit mode
-  const getCurrentValue = () => {
-    if (!isEditMode) return getValue(field);
-    
-    // Navigate through editedData using fieldName path
-    const keys = fieldName.split('.');
-    let current = editedData;
-    for (const key of keys) {
-      if (!current) return '';
-      current = current[key];
-    }
-    return getValue(current);
-  };
-  
-  const displayValue = getCurrentValue();
-  const info = getFieldInfo(field);
-  
-  const handleMouseEnter = () => {
-    if (info && !isEditMode) {
-      setHoveredField({ fieldName, page: info.page, bbox: info.bbox });
-    }
-  };
-  
-  const handleMouseLeave = () => {
-    setHoveredField(null);
-  };
-  
-  const isHovered = hoveredField?.fieldName === fieldName;
-  
-  if (isEditMode && editable) {
-    return (
-      <div>
-        <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</dt>
-        <dd className="mt-1">
-          <input
-            type="text"
-            value={displayValue || ''}
-            onChange={(e) => updateEditedField(fieldName, e.target.value)}
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          />
-        </dd>
-      </div>
-    );
-  }
-  
-  return (
-    <div>
-      <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</dt>
-      <dd 
-        className={`mt-1 text-sm text-gray-900 transition-all group ${
-          info ? 'cursor-pointer hover:bg-yellow-100 hover:shadow-sm px-2 py-1 -mx-2 -my-1 rounded' : ''
-        } ${isHovered ? 'bg-yellow-200 shadow-md' : ''}`}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-      >
-        <span>{displayValue || 'N/A'}</span>
-        {info && (
-          <span className="ml-2 text-xs text-gray-500 italic font-normal opacity-0 group-hover:opacity-100 transition-opacity">
-            (Page {info.page})
-          </span>
-        )}
-      </dd>
-    </div>
-  );
-};
+import {
+  HighlightBox,
+  DataField,
+  DocumentListItem,
+  DocumentHeader,
+  CommentInput,
+  StatsBar,
+  getHighlightsForPage
+} from './dashboard/index';
 
 /**
  * Dashboard Component - Professional Design with Tailwind CSS
@@ -189,6 +26,10 @@ function Dashboard({ refreshTrigger }) {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedData, setEditedData] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [userComment, setUserComment] = useState('');
+  const [changeLogs, setChangeLogs] = useState([]);
+  const [showChangeLog, setShowChangeLog] = useState(false);
+  const [loadingLogs, setLoadingLogs] = useState(false);
 
   useEffect(() => {
     loadDocuments();
@@ -225,6 +66,19 @@ function Dashboard({ refreshTrigger }) {
       setStats(statsData);
     } catch (error) {
       console.error('Error loading stats:', error);
+    }
+  };
+
+  const loadChangeLogs = async (docId) => {
+    setLoadingLogs(true);
+    try {
+      const logsData = await api.getChangeLogs(docId);
+      setChangeLogs(logsData.results || []);
+    } catch (error) {
+      console.error('Error loading change logs:', error);
+      setChangeLogs([]);
+    } finally {
+      setLoadingLogs(false);
     }
   };
 
@@ -285,11 +139,13 @@ function Dashboard({ refreshTrigger }) {
   const handleEdit = () => {
     setIsEditMode(true);
     setEditedData(JSON.parse(JSON.stringify(selectedDoc.extracted_data))); // Deep copy
+    setUserComment('');
   };
 
   const handleCancelEdit = () => {
     setIsEditMode(false);
     setEditedData(null);
+    setUserComment('');
   };
 
   const handleSave = async () => {
@@ -297,18 +153,23 @@ function Dashboard({ refreshTrigger }) {
 
     setIsSaving(true);
     try {
-      // Update the document with new extracted data
+      // Update the document with new extracted data and comment
       const response = await api.updateDocument(selectedDoc.id, {
-        extracted_data: editedData
+        extracted_data: editedData,
+        user_comment: userComment
       });
       
-      // Update local state
-      setSelectedDoc({ ...selectedDoc, extracted_data: editedData });
+      // Update local state with new edit count and timestamp
+      setSelectedDoc(response);
       setIsEditMode(false);
       setEditedData(null);
+      setUserComment('');
       
-      // Refresh document list
+      // Refresh document list and change logs
       loadDocuments();
+      if (response.edit_count > 0) {
+        loadChangeLogs(response.id);
+      }
       
       alert('Changes saved successfully!');
     } catch (error) {
@@ -372,26 +233,7 @@ function Dashboard({ refreshTrigger }) {
   return (
     <div className="w-full">
       {/* Statistics */}
-      {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-            <div className="text-3xl font-bold text-gray-900">{stats.total}</div>
-            <div className="text-sm text-gray-600 uppercase tracking-wide mt-1">Tổng số</div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-            <div className="text-3xl font-bold text-green-600">{stats.completed}</div>
-            <div className="text-sm text-gray-600 uppercase tracking-wide mt-1">Hoàn thành</div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-            <div className="text-3xl font-bold text-blue-600">{stats.processing}</div>
-            <div className="text-sm text-gray-600 uppercase tracking-wide mt-1">Đang xử lý</div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-            <div className="text-3xl font-bold text-red-600">{stats.failed}</div>
-            <div className="text-sm text-gray-600 uppercase tracking-wide mt-1">Thất bại</div>
-          </div>
-        </div>
-      )}
+      <StatsBar stats={stats} loading={!stats} />
 
       {/* Main Content */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -409,31 +251,18 @@ function Dashboard({ refreshTrigger }) {
             ) : (
               <div className="divide-y divide-gray-200">
                 {documents.map((doc) => (
-                  <div
+                  <DocumentListItem
                     key={doc.id}
-                    className={`p-4 cursor-pointer transition-colors hover:bg-gray-50 ${
-                      selectedDoc?.id === doc.id ? 'bg-blue-50 border-l-4 border-blue-600' : ''
-                    }`}
-                    onClick={() => handleDocumentClick(doc)}
-                  >
-                    <div className="flex justify-between items-start gap-3">
-                      <div className="flex-1 min-w-0">
-                        <h3 className="text-sm font-medium text-gray-900 truncate">{doc.file_name}</h3>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {new Date(doc.uploaded_at).toLocaleString()}
-                        </p>
-                        {doc.fund_name && (
-                          <p className="text-xs text-blue-600 font-medium mt-1">
-                            {doc.fund_name}
-                            {doc.fund_code && ` (${doc.fund_code})`}
-                          </p>
-                        )}
-                      </div>
-                      <div className="flex-shrink-0">
-                        {getStatusBadge(doc.status)}
-                      </div>
-                    </div>
-                  </div>
+                    doc={doc}
+                    isSelected={selectedDoc?.id === doc.id}
+                    onSelect={() => handleDocumentClick(doc)}
+                    getStatusBadge={getStatusBadge}
+                    showChangeLog={showChangeLog}
+                    setShowChangeLog={setShowChangeLog}
+                    loadChangeLogs={loadChangeLogs}
+                    changeLogs={changeLogs}
+                    loadingLogs={loadingLogs}
+                  />
                 ))}
               </div>
             )}
@@ -445,129 +274,33 @@ function Dashboard({ refreshTrigger }) {
           {selectedDoc ? (
             <>
               {/* Header */}
-              <div className="p-4 border-b border-gray-200">
-                <div className="flex justify-between items-center">
-                  <h2 className="text-lg font-semibold text-gray-900">Dữ liệu trích xuất</h2>
-                  <div className="flex gap-2">
-                    {selectedDoc.status === 'completed' && !isEditMode && (
-                      <button
-                        className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors flex items-center gap-1"
-                        onClick={handleEdit}
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                        </svg>
-                        Chỉnh sửa
-                      </button>
-                    )}
-                    {isEditMode && (
-                      <>
-                        <button
-                          className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 transition-colors flex items-center gap-1"
-                          onClick={handleSave}
-                          disabled={isSaving}
-                        >
-                          {isSaving ? (
-                            <>
-                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                              Đang lưu...
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                              Lưu
-                            </>
-                          )}
-                        </button>
-                        <button
-                          className="px-3 py-1.5 text-sm font-medium text-white bg-gray-500 rounded hover:bg-gray-600 disabled:bg-gray-300 transition-colors flex items-center gap-1"
-                          onClick={handleCancelEdit}
-                          disabled={isSaving}
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                          Hủy
-                        </button>
-                      </>
-                    )}
-                    {selectedDoc.status === 'failed' && (
-                      <button
-                        className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
-                        onClick={() => handleReprocess(selectedDoc.id)}
-                      >
-                        Xử lý lại
-                      </button>
-                    )}
-                    <button
-                      className="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded hover:bg-red-700 transition-colors"
-                      onClick={() => handleDelete(selectedDoc.id)}
-                    >
-                      Xóa
-                    </button>
-                    <a
-                      href={api.getDownloadUrl(selectedDoc.id)}
-                      className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded hover:bg-gray-200 transition-colors"
-                      download
-                    >
-                      Tải PDF
-                    </a>
-                  </div>
-                </div>
-              </div>
+              <DocumentHeader
+                selectedDoc={selectedDoc}
+                isEditMode={isEditMode}
+                isSaving={isSaving}
+                handleEdit={handleEdit}
+                handleSave={handleSave}
+                handleCancelEdit={handleCancelEdit}
+                handleReprocess={handleReprocess}
+                handleDelete={handleDelete}
+              />
+
+              {/* Comment Input (only shown in edit mode) */}
+              {isEditMode && (
+                <CommentInput userComment={userComment} setUserComment={setUserComment} />
+              )}
 
               {/* Content */}
               <div className="flex-1 overflow-y-auto p-6">
                 {selectedDoc.status === 'completed' && selectedDoc.extracted_data ? (
                   <div className="space-y-6">
-                    {/* Optimized Pages Preview */}
-                    {selectedDoc.optimized_file_url && (
-                      <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                        <h3 className="text-base font-semibold text-gray-900 mb-4">Các trang đã tối ưu hóa</h3>
-                        {loadingPages ? (
-                          <div className="flex justify-center py-8">
-                            <div className="w-8 h-8 border-4 border-gray-200 border-t-blue-600 rounded-full animate-spin"></div>
-                          </div>
-                        ) : optimizedPages ? (
-                          <>
-                
-                            <div className="grid grid-cols-4 gap-3 max-h-96 overflow-y-auto">
-                              {optimizedPages.pages.map((page) => (
-                                <div
-                                  key={page.page_number}
-                                  className="relative border border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:shadow-md transition-all"
-                                  onClick={() => setSelectedPage(page)}
-                                >
-                                  {/* Page Image */}
-                                  <img
-                                    src={page.image}
-                                    alt={`Page ${page.page_number}`}
-                                    className="w-full h-auto"
-                                  />
-                                  
-                                  {/* Page Number Label */}
-                                  <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-white text-xs py-1 text-center">
-                                    Trang {page.page_number}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </>
-                        ) : (
-                          <p className="text-sm text-gray-500 italic">Không có dữ liệu trang đã tối ưu</p>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Fund Information */}
-                    <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                      <h3 className="text-base font-semibold text-gray-900 mb-4">Thông tin định danh</h3>
-                      <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Basic Information */}
+                    <div>
+                      <h3 className="text-md font-semibold text-gray-900 border-b pb-2 mb-4">Thông tin cơ bản</h3>
+                      <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
                         <DataField 
                           label="Tên quỹ" 
-                          field={selectedDoc.extracted_data.fund_name} 
+                          field={selectedDoc.extracted_data.fund_name}
                           fieldName="fund_name"
                           editable={true}
                           isEditMode={isEditMode}
@@ -577,8 +310,8 @@ function Dashboard({ refreshTrigger }) {
                           updateEditedField={updateEditedField}
                         />
                         <DataField 
-                          label="Mã giao dịch" 
-                          field={selectedDoc.extracted_data.fund_code} 
+                          label="Mã quỹ" 
+                          field={selectedDoc.extracted_data.fund_code}
                           fieldName="fund_code"
                           editable={true}
                           isEditMode={isEditMode}
@@ -588,8 +321,8 @@ function Dashboard({ refreshTrigger }) {
                           updateEditedField={updateEditedField}
                         />
                         <DataField 
-                          label="Tên công ty quản lý quỹ" 
-                          field={selectedDoc.extracted_data.management_company} 
+                          label="Công ty quản lý" 
+                          field={selectedDoc.extracted_data.management_company}
                           fieldName="management_company"
                           editable={true}
                           isEditMode={isEditMode}
@@ -600,7 +333,7 @@ function Dashboard({ refreshTrigger }) {
                         />
                         <DataField 
                           label="Ngân hàng giám sát" 
-                          field={selectedDoc.extracted_data.custodian_bank} 
+                          field={selectedDoc.extracted_data.custodian_bank}
                           fieldName="custodian_bank"
                           editable={true}
                           isEditMode={isEditMode}
@@ -612,36 +345,14 @@ function Dashboard({ refreshTrigger }) {
                       </dl>
                     </div>
 
-                    {/* Fee Structure */}
-                    {(selectedDoc.extracted_data.fees || selectedDoc.extracted_data.fees_detail) && (
-                      <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                        <h3 className="text-base font-semibold text-gray-900 mb-4">Thông tin phí</h3>
-                        <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Fee Information */}
+                    {selectedDoc.extracted_data.fees && (
+                      <div>
+                        <h3 className="text-md font-semibold text-gray-900 border-b pb-2 mb-4">Phí dịch vụ</h3>
+                        <dl className="grid grid-cols-1 gap-y-4">
                           <DataField 
-                            label="Phí phát hành" 
-                            field={selectedDoc.extracted_data.fees?.subscription_fee || selectedDoc.extracted_data.fees_detail?.issue} 
-                            fieldName="fees.subscription_fee"
-                            editable={true}
-                            isEditMode={isEditMode}
-                            editedData={editedData}
-                            hoveredField={hoveredField}
-                            setHoveredField={setHoveredField}
-                            updateEditedField={updateEditedField}
-                          />
-                          <DataField 
-                            label="Phí mua lại" 
-                            field={selectedDoc.extracted_data.fees?.redemption_fee || selectedDoc.extracted_data.fees_detail?.redemption} 
-                            fieldName="fees.redemption_fee"
-                            editable={true}
-                            isEditMode={isEditMode}
-                            editedData={editedData}
-                            hoveredField={hoveredField}
-                            setHoveredField={setHoveredField}
-                            updateEditedField={updateEditedField}
-                          />
-                          <DataField 
-                            label="Phí quản lý thường niên" 
-                            field={selectedDoc.extracted_data.fees?.management_fee || selectedDoc.extracted_data.management_fee} 
+                            label="Phí quản lý" 
+                            field={selectedDoc.extracted_data.fees.management_fee}
                             fieldName="fees.management_fee"
                             editable={true}
                             isEditMode={isEditMode}
@@ -651,8 +362,30 @@ function Dashboard({ refreshTrigger }) {
                             updateEditedField={updateEditedField}
                           />
                           <DataField 
+                            label="Phí giao dịch mua" 
+                            field={selectedDoc.extracted_data.fees.subscription_fee}
+                            fieldName="fees.subscription_fee"
+                            editable={true}
+                            isEditMode={isEditMode}
+                            editedData={editedData}
+                            hoveredField={hoveredField}
+                            setHoveredField={setHoveredField}
+                            updateEditedField={updateEditedField}
+                          />
+                          <DataField 
+                            label="Phí giao dịch bán" 
+                            field={selectedDoc.extracted_data.fees.redemption_fee}
+                            fieldName="fees.redemption_fee"
+                            editable={true}
+                            isEditMode={isEditMode}
+                            editedData={editedData}
+                            hoveredField={hoveredField}
+                            setHoveredField={setHoveredField}
+                            updateEditedField={updateEditedField}
+                          />
+                          <DataField 
                             label="Phí chuyển đổi" 
-                            field={selectedDoc.extracted_data.fees?.switching_fee || selectedDoc.extracted_data.fees_detail?.conversion} 
+                            field={selectedDoc.extracted_data.fees.switching_fee}
                             fieldName="fees.switching_fee"
                             editable={true}
                             isEditMode={isEditMode}
@@ -665,201 +398,196 @@ function Dashboard({ refreshTrigger }) {
                       </div>
                     )}
 
-                    {/* Portfolio Holdings */}
-                    <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                      <h3 className="text-base font-semibold text-gray-900 mb-4">Danh mục đầu tư</h3>
-                      {selectedDoc.extracted_data.portfolio && selectedDoc.extracted_data.portfolio.length > 0 ? (
+                    {/* Portfolio Information */}
+                    {selectedDoc.extracted_data.portfolio && selectedDoc.extracted_data.portfolio.length > 0 && (
+                      <div>
+                        <h3 className="text-md font-semibold text-gray-900 border-b pb-2 mb-4">Danh mục đầu tư</h3>
                         <div className="overflow-x-auto">
-                          <table className="min-w-full divide-y divide-gray-200">
-                            <thead className="bg-gray-100">
+                          <table className="min-w-full divide-y divide-gray-200 text-sm">
+                            <thead className="bg-gray-50">
                               <tr>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                  Tên tài sản
-                                </th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                  Tỷ trọng
-                                </th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">STT</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Mã CK</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Số lượng</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Giá trị</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">% NAV</th>
                               </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
-                              {selectedDoc.extracted_data.portfolio.map((item, index) => (
-                                <tr key={index} className="hover:bg-gray-50">
-                                  <td className="px-4 py-3 text-sm text-gray-900">
-                                    {getValue(item.security_name) || getValue(item.asset_name) || 'N/A'}
-                                  </td>
-                                  <td className="px-4 py-3 text-sm text-gray-900">
-                                    {getValue(item.percentage) ? `${getValue(item.percentage)}%` : (getValue(item.weight) || 'N/A')}
-                                  </td>
+                              {selectedDoc.extracted_data.portfolio.map((item, idx) => (
+                                <tr key={idx} className="hover:bg-gray-50">
+                                  <td className="px-3 py-2 whitespace-nowrap text-gray-900">{item.stt || idx + 1}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap font-medium text-gray-900">{item.ma_ck || 'N/A'}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-gray-900">{item.so_luong || 'N/A'}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-gray-900">{item.gia_tri || 'N/A'}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-gray-900">{item.ty_trong || 'N/A'}</td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
                         </div>
-                      ) : (
-                        <p className="text-sm text-gray-500 italic">Không tìm thấy dữ liệu danh mục đầu tư</p>
-                      )}
-                    </div>
+                      </div>
+                    )}
 
                     {/* NAV History */}
-                    <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                      <h3 className="text-base font-semibold text-gray-900 mb-4">Giá trị tài sản ròng (NAV) qua các kỳ</h3>
-                      {selectedDoc.extracted_data.nav_history && selectedDoc.extracted_data.nav_history.length > 0 ? (
+                    {selectedDoc.extracted_data.nav_history && selectedDoc.extracted_data.nav_history.length > 0 && (
+                      <div>
+                        <h3 className="text-md font-semibold text-gray-900 border-b pb-2 mb-4">Lịch sử NAV</h3>
                         <div className="overflow-x-auto">
-                          <table className="min-w-full divide-y divide-gray-200">
-                            <thead className="bg-gray-100">
+                          <table className="min-w-full divide-y divide-gray-200 text-sm">
+                            <thead className="bg-gray-50">
                               <tr>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                  Kỳ
-                                </th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                  Giá trị
-                                </th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Ngày</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">NAV</th>
                               </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
-                              {selectedDoc.extracted_data.nav_history.map((item, index) => (
-                                <tr key={index} className="hover:bg-gray-50">
-                                  <td className="px-4 py-3 text-sm text-gray-900">
-                                    {getValue(item.date) || getValue(item.period) || 'N/A'}
-                                  </td>
-                                  <td className="px-4 py-3 text-sm text-gray-900">
-                                    {getValue(item.nav_per_unit) || getValue(item.value) || 'N/A'}
-                                  </td>
+                              {selectedDoc.extracted_data.nav_history.map((item, idx) => (
+                                <tr key={idx} className="hover:bg-gray-50">
+                                  <td className="px-3 py-2 whitespace-nowrap text-gray-900">{item.ngay || 'N/A'}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-gray-900">{item.nav || 'N/A'}</td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
                         </div>
-                      ) : (
-                        <p className="text-sm text-gray-500 italic">Không tìm thấy dữ liệu lịch sử NAV</p>
-                      )}
-                    </div>
+                      </div>
+                    )}
 
                     {/* Dividend History */}
-                    <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                      <h3 className="text-base font-semibold text-gray-900 mb-4">Lịch sử chia cổ tức</h3>
-                      {selectedDoc.extracted_data.dividend_history && selectedDoc.extracted_data.dividend_history.length > 0 ? (
+                    {selectedDoc.extracted_data.dividend_history && selectedDoc.extracted_data.dividend_history.length > 0 && (
+                      <div>
+                        <h3 className="text-md font-semibold text-gray-900 border-b pb-2 mb-4">Lịch sử chi trả cổ tức</h3>
                         <div className="overflow-x-auto">
-                          <table className="min-w-full divide-y divide-gray-200">
-                            <thead className="bg-gray-100">
+                          <table className="min-w-full divide-y divide-gray-200 text-sm">
+                            <thead className="bg-gray-50">
                               <tr>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                  Ngày
-                                </th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                  Giá trị cổ tức
-                                </th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                  Ngày thanh toán
-                                </th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Ngày</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Giá trị</th>
                               </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
-                              {selectedDoc.extracted_data.dividend_history.map((item, index) => (
-                                <tr key={index} className="hover:bg-gray-50">
-                                  <td className="px-4 py-3 text-sm text-gray-900">{getValue(item.date) || 'N/A'}</td>
-                                  <td className="px-4 py-3 text-sm text-gray-900">{getValue(item.dividend_per_unit) || 'N/A'}</td>
-                                  <td className="px-4 py-3 text-sm text-gray-900">{getValue(item.payment_date) || 'N/A'}</td>
+                              {selectedDoc.extracted_data.dividend_history.map((item, idx) => (
+                                <tr key={idx} className="hover:bg-gray-50">
+                                  <td className="px-3 py-2 whitespace-nowrap text-gray-900">{item.ngay || 'N/A'}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-gray-900">{item.gia_tri || 'N/A'}</td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
                         </div>
-                      ) : (
-                        <p className="text-sm text-gray-500 italic">Không tìm thấy dữ liệu lịch sử chia cổ tức</p>
-                      )}
-                    </div>
+                      </div>
+                    )}
 
-                    {/* Raw JSON */}
-                    <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                      <h3 className="text-base font-semibold text-gray-900 mb-4">Dữ liệu thô (JSON)</h3>
-                      <pre className="bg-white p-4 rounded border border-gray-200 overflow-x-auto text-xs text-gray-800">
-                        {JSON.stringify(selectedDoc.extracted_data, null, 2)}
-                      </pre>
-                    </div>
+                    {/* PDF Page Thumbnails */}
+                    {optimizedPages && optimizedPages.pages && optimizedPages.pages.length > 0 && (
+                      <div>
+                        <h3 className="text-md font-semibold text-gray-900 border-b pb-2 mb-4">Trang PDF</h3>
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                          {optimizedPages.pages.map((page) => (
+                            <div
+                              key={page.page_number}
+                              className="border border-gray-300 rounded-lg overflow-hidden cursor-pointer hover:shadow-lg transition-shadow"
+                              onClick={() => setSelectedPage(page)}
+                            >
+                              <img
+                                src={page.image}
+                                alt={`Page ${page.page_number}`}
+                                className="w-full h-auto"
+                              />
+                              <div className="p-2 bg-gray-50 text-center">
+                                <span className="text-xs font-medium text-gray-600">Trang {page.page_number}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : selectedDoc.status === 'failed' ? (
-                  <div className="flex flex-col items-center justify-center h-full text-center">
-                    <h3 className="text-lg font-semibold text-red-600 mb-2">Xử lý thất bại</h3>
-                    <p className="text-gray-600">{selectedDoc.error_message || 'An error occurred during processing'}</p>
+                  <div className="text-center py-12">
+                    <svg className="mx-auto h-12 w-12 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <h3 className="mt-2 text-sm font-medium text-gray-900">Xử lý thất bại</h3>
+                    <p className="mt-1 text-sm text-red-600">{selectedDoc.error_message || 'Đã xảy ra lỗi khi xử lý tài liệu'}</p>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full gap-4">
-                    <div className="w-12 h-12 border-4 border-gray-200 border-t-blue-600 rounded-full animate-spin"></div>
+                  <div className="text-center py-12">
+                    <div className="w-12 h-12 border-4 border-gray-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4"></div>
                     <p className="text-gray-600">Đang xử lý tài liệu...</p>
                   </div>
                 )}
               </div>
             </>
           ) : (
-            <div className="flex items-center justify-center h-full">
-              <p className="text-gray-500">Chọn một tài liệu để xem chi tiết</p>
+            <div className="flex items-center justify-center h-full p-8">
+              <div className="text-center">
+                <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <h3 className="mt-2 text-sm font-medium text-gray-900">Chưa chọn tài liệu</h3>
+                <p className="mt-1 text-sm text-gray-500">Chọn một tài liệu từ danh sách để xem chi tiết</p>
+              </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Page Preview Modal */}
+      {/* Full-Screen Page Modal */}
       {selectedPage && (
         <div 
-          className="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black bg-opacity-90 flex flex-col"
           onClick={() => setSelectedPage(null)}
         >
-          <div className="relative max-w-4xl max-h-[90vh] bg-white rounded-lg overflow-hidden flex flex-col">
+          <div className="p-4 flex justify-between items-center">
+            <h3 className="text-white text-lg font-semibold">Trang {selectedPage.page_number}</h3>
+            <button 
+              onClick={() => setSelectedPage(null)}
+              className="text-gray-500 hover:text-gray-700"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Image Container with Relative Positioning */}
+          <div className="relative overflow-auto flex-1 bg-gray-100 p-4 flex justify-center">
             
-            {/* Header */}
-            <div className="bg-white border-b border-gray-200 px-4 py-3 flex justify-between items-center z-20">
-              <h3 className="text-lg font-semibold text-gray-900">
-                Preview: Page {selectedPage.page_number}
-              </h3>
-              <button
-                onClick={() => setSelectedPage(null)}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+            {/* Wrapper div needs "relative" so absolute children align to it */}
+            <div 
+              className="relative inline-block shadow-lg"
+              style={{ width: '85%' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* 1. The Page Image */}
+              <img
+                src={selectedPage.image}
+                alt={`Page ${selectedPage.page_number}`}
+                className="w-full h-auto block"
+              />
+
+              {/* 2. Bbox-Based Annotation Overlay */}
+              {selectedDoc?.extracted_data && 
+                getHighlightsForPage(selectedDoc.extracted_data, selectedPage.page_number)
+                  .map((hl) => {
+                    const isHighlighted = hoveredField && 
+                                        hoveredField.page === selectedPage.page_number &&
+                                        JSON.stringify(hoveredField.bbox) === JSON.stringify(hl.bbox);
+                    return (
+                      <HighlightBox 
+                        key={hl.id} 
+                        bbox={hl.bbox} 
+                        label={hl.label}
+                        value={hl.value}
+                        isHighlighted={isHighlighted}
+                      />
+                    );
+                  })
+              }
             </div>
 
-            {/* Image Container with Relative Positioning */}
-            <div className="relative overflow-auto flex-1 bg-gray-100 p-4 flex justify-center">
-              
-              {/* Wrapper div needs "relative" so absolute children align to it */}
-              <div 
-                className="relative inline-block shadow-lg"
-                style={{ width: '90%' }}
-                onClick={(e) => e.stopPropagation()} // Prevent clicking image from closing modal
-              >
-                {/* 1. The Optimized Page Image */}
-                <img
-                  src={selectedPage.image}
-                  alt={`Page ${selectedPage.page_number}`}
-                  className="w-full h-auto block" 
-                  // 'block' removes bottom spacing issues
-                />
-
-                {/* 2. The Annotation Overlay */}
-                {selectedDoc?.extracted_data && 
-                  getHighlightsForPage(selectedDoc.extracted_data, selectedPage.page_number)
-                    .map((hl) => {
-                      const isHighlighted = hoveredField && 
-                                          hoveredField.page === selectedPage.page_number &&
-                                          JSON.stringify(hoveredField.bbox) === JSON.stringify(hl.bbox);
-                      return (
-                        <HighlightBox 
-                          key={hl.id} 
-                          bbox={hl.bbox} 
-                          label={hl.label}
-                          value={hl.value}
-                          isHighlighted={isHighlighted}
-                        />
-                      );
-                    })
-                }
-              </div>
-
-            </div>
           </div>
         </div>
       )}

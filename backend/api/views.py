@@ -5,18 +5,20 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.decorators import action
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 import logging
 import fitz
 import io
 import base64
 
-from .models import Document, ExtractedFundData
+from .models import Document, ExtractedFundData, DocumentChangeLog
 from .serializers import (
     MessageSerializer,
     DocumentSerializer,
     DocumentUploadSerializer,
     DocumentListSerializer,
-    ExtractedFundDataSerializer
+    ExtractedFundDataSerializer,
+    DocumentChangeLogSerializer
 )
 from .services import DocumentProcessingService
 
@@ -85,8 +87,32 @@ class DocumentViewSet(viewsets.ModelViewSet):
         """Update document - supports updating extracted_data"""
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
+        
+        # Store old data for change tracking
+        old_extracted_data = instance.extracted_data.copy() if instance.extracted_data else {}
+        user_comment = request.data.get('user_comment', '')
+        
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
+        
+        # If extracted_data was updated, increment edit count and track changes
+        if 'extracted_data' in request.data:
+            new_extracted_data = request.data['extracted_data']
+            
+            # Detect changes
+            changes = self._detect_changes(old_extracted_data, new_extracted_data)
+            
+            if changes:
+                instance.edit_count += 1
+                instance.last_edited_at = timezone.now()
+                
+                # Create change log entry
+                DocumentChangeLog.objects.create(
+                    document=instance,
+                    user_comment=user_comment,
+                    changes=changes
+                )
+        
         self.perform_update(serializer)
         
         # If extracted_data was updated, sync with ExtractedFundData
@@ -119,10 +145,52 @@ class DocumentViewSet(viewsets.ModelViewSet):
                         'dividend_history': extracted_data.get('dividend_history', []),
                     }
                 )
+                
+                logger.info(f"Document {instance.id} edited. Total edits: {instance.edit_count}")
             except Exception as e:
                 logger.error(f"Error syncing ExtractedFundData: {e}")
         
         return Response(serializer.data)
+    
+    def _detect_changes(self, old_data, new_data, prefix=''):
+        """Recursively detect changes between old and new data"""
+        changes = {}
+        
+        # Helper to get value from structured or flat format
+        def get_value(field_data):
+            if isinstance(field_data, dict) and 'value' in field_data:
+                return field_data['value']
+            return field_data
+        
+        # Get all keys from both old and new data
+        all_keys = set(old_data.keys()) | set(new_data.keys())
+        
+        for key in all_keys:
+            field_path = f"{prefix}.{key}" if prefix else key
+            old_val = old_data.get(key)
+            new_val = new_data.get(key)
+            
+            # Handle nested dictionaries (but not structured fields with 'value' key)
+            if isinstance(old_val, dict) and isinstance(new_val, dict):
+                # Check if it's a structured field (has 'value' key)
+                if 'value' in old_val or 'value' in new_val:
+                    old_value = get_value(old_val)
+                    new_value = get_value(new_val)
+                    if old_value != new_value:
+                        changes[field_path] = {'old': old_value, 'new': new_value}
+                else:
+                    # Recursively check nested dict
+                    nested_changes = self._detect_changes(old_val, new_val, field_path)
+                    changes.update(nested_changes)
+            else:
+                # Direct comparison for simple values
+                old_value = get_value(old_val) if old_val else old_val
+                new_value = get_value(new_val) if new_val else new_val
+                
+                if old_value != new_value:
+                    changes[field_path] = {'old': old_value, 'new': new_value}
+        
+        return changes
     
     def partial_update(self, request, *args, **kwargs):
         """Partial update (PATCH)"""
@@ -202,6 +270,19 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 {'error': f'Failed to extract pages: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=True, methods=['get'])
+    def change_logs(self, request, pk=None):
+        """
+        Get all change logs for a document
+        """
+        document = self.get_object()
+        logs = document.change_logs.all()
+        serializer = DocumentChangeLogSerializer(logs, many=True)
+        return Response({
+            'count': logs.count(),
+            'results': serializer.data
+        })
 
     @action(detail=True, methods=['get'])
     def download(self, request, pk=None):

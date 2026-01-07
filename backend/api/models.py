@@ -45,6 +45,10 @@ class Document(models.Model):
     # For evaluation purposes
     confidence_score = models.FloatField(null=True, blank=True)
     
+    # Edit tracking
+    edit_count = models.IntegerField(default=0)
+    last_edited_at = models.DateTimeField(null=True, blank=True)
+    
     class Meta:
         ordering = ['-uploaded_at']
         indexes = [
@@ -99,3 +103,26 @@ class ExtractedFundData(models.Model):
     class Meta:
         verbose_name = "Extracted Fund Data"
         verbose_name_plural = "Extracted Fund Data"
+
+
+class DocumentChangeLog(models.Model):
+    """
+    Model to track all changes made to a document's extracted data
+    """
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='change_logs')
+    
+    # Change metadata
+    changed_at = models.DateTimeField(auto_now_add=True)
+    user_comment = models.TextField(blank=True, null=True)
+    
+    # Change details (stored as JSON)
+    changes = models.JSONField(default=dict)  # {field_path: {old: value, new: value}}
+    
+    class Meta:
+        ordering = ['-changed_at']
+        indexes = [
+            models.Index(fields=['document', '-changed_at']),
+        ]
+    
+    def __str__(self):
+        return f"Change for {self.document.file_name} at {self.changed_at}"

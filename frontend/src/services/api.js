@@ -170,6 +170,21 @@ class ApiService {
   }
 
   /**
+   * Get change logs for a document
+   * @param {number} id - Document ID
+   * @returns {Promise} Change logs data
+   */
+  async getChangeLogs(id) {
+    const response = await fetch(`${API_BASE_URL}/documents/${id}/change_logs/`);
+    
+    if (!response.ok) {
+      throw new Error('Failed to fetch change logs');
+    }
+
+    return response.json();
+  }
+
+  /**
    * Get download URL for a document
    * @param {number} id - Document ID
    * @returns {string} Download URL
