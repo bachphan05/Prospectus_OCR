@@ -1,4 +1,5 @@
-export { default as HighlightBox } from './HighlightBox';
+// Note: HighlightBox is no longer used - we now use burned-in highlights via preview-page API
+// export { default as HighlightBox } from './HighlightBox';
 export { default as DataField } from './DataField';
 export { default as ChangeLogTooltip } from './ChangeLogTooltip';
 export { default as DocumentListItem } from './DocumentListItem';

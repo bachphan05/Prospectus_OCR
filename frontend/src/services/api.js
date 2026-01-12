@@ -201,6 +201,16 @@ class ApiService {
   }
 
   /**
+   * Get preview page with highlights burned in
+   * @param {number} id - Document ID
+   * @param {number} pageNum - Page number (1-based)
+   * @returns {string} URL to the annotated image
+   */
+  getPreviewPageUrl(id, pageNum) {
+    return `${API_BASE_URL}/documents/${id}/preview-page/${pageNum}/`;
+  }
+
+  /**
    * Ingest document for RAG (create vector embeddings)
    * @param {number} id - Document ID
    * @returns {Promise} Ingestion result

@@ -22,6 +22,7 @@ from django.db import close_old_connections
 from pgvector.django import CosineDistance
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 import PIL.Image
+import PIL.ImageDraw
 logger = logging.getLogger(__name__)
 
 try:
@@ -691,6 +692,168 @@ Now extract the data from the provided document."""
         if text.endswith('```'):
             text = text[:-3]
         return text.strip()
+    
+    def generate_annotated_image(self, pdf_path: str, page_number: int, bboxes: list) -> str:
+        """
+        Render a page to an image and burn in highlights.
+
+        IMPORTANT: We draw in *pixel space* on top of the rendered pixmap.
+        This keeps Gemini's 0-1000 "visual" coordinates aligned with what the
+        user sees, and avoids PDF user-space quirks (rotation / cropbox offsets).
+        """
+        try:
+            doc = fitz.open(pdf_path)
+            try:
+                page_idx = page_number - 1
+                if page_idx < 0 or page_idx >= len(doc):
+                    return None
+
+                page = doc[page_idx]
+
+                # Render: keep this consistent with what the frontend shows.
+                # Using a 2x scale (~144 DPI for A4) gives crisp previews.
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+
+                base = PIL.Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("RGBA")
+                overlay = PIL.Image.new("RGBA", base.size, (0, 0, 0, 0))
+                draw = PIL.ImageDraw.Draw(overlay)
+
+                w, h = base.size
+                border_px = max(2, int(round(min(w, h) * 0.002)))
+
+                # Optional: OCR-snap highlights to the exact rendered text positions.
+                # This helps when Gemini's 0-1000 coordinates are systematically biased.
+                ocr_results = None
+                wants_ocr_snap = any(
+                    isinstance(it, dict) and str(it.get("value") or "").strip()
+                    for it in (bboxes or [])
+                )
+                if wants_ocr_snap:
+                    try:
+                        img_bytes = pix.tobytes("png")
+                        result = ocr_engine(img_bytes)
+                        if result and isinstance(result, tuple):
+                            result = result[0]
+                        ocr_results = result or []
+                    except Exception as ocr_error:
+                        logger.debug(f"OCR snap failed for preview page {page_number}: {ocr_error}")
+                        ocr_results = None
+
+                def _norm_for_match(s: str) -> str:
+                    s = str(s or "")
+                    # keep alnum + spaces so we can do token-ish matching
+                    s = unicodedata.normalize('NFD', s)
+                    s = ''.join(c for c in s if not unicodedata.combining(c))
+                    s = s.replace('đ', 'd').replace('Đ', 'D')
+                    s = s.lower()
+                    s = re.sub(r"[^a-z0-9\s]", " ", s)
+                    s = re.sub(r"\s+", " ", s).strip()
+                    return s
+
+                def _ocr_best_rect(target_value: str):
+                    if not ocr_results:
+                        return None
+                    tv = _norm_for_match(target_value)
+                    if not tv or len(tv) < 3:
+                        return None
+
+                    best = None
+                    best_score = 0.0
+
+                    for res in ocr_results:
+                        try:
+                            box, text, conf = res[0], res[1], res[2]
+                        except Exception:
+                            continue
+
+                        if not text:
+                            continue
+                        ct = _norm_for_match(text)
+                        if not ct:
+                            continue
+
+                        # Simple robust scoring: containment + token overlap.
+                        score = 0.0
+                        if tv == ct:
+                            score = 1.0
+                        elif tv in ct or ct in tv:
+                            score = 0.9
+                        else:
+                            tv_tokens = set(tv.split())
+                            ct_tokens = set(ct.split())
+                            if tv_tokens and ct_tokens:
+                                overlap = len(tv_tokens & ct_tokens) / max(1, len(tv_tokens))
+                                score = 0.6 * overlap
+
+                        # Prefer higher OCR confidence.
+                        try:
+                            score *= float(conf) if conf is not None else 1.0
+                        except Exception:
+                            pass
+
+                        if score > best_score:
+                            xs = [p[0] for p in box]
+                            ys = [p[1] for p in box]
+                            x0, x1 = min(xs), max(xs)
+                            y0, y1 = min(ys), max(ys)
+                            best = (x0, y0, x1, y1)
+                            best_score = score
+
+                    # Require at least some confidence.
+                    if best and best_score >= 0.35:
+                        return best
+                    return None
+
+                for item in bboxes or []:
+                    bbox = item.get('bbox') if isinstance(item, dict) else None
+                    if not bbox or len(bbox) != 4:
+                        continue
+
+                    ymin, xmin, ymax, xmax = bbox
+
+                    # Clamp + convert to pixels.
+                    xmin = max(0, min(1000, int(xmin)))
+                    xmax = max(0, min(1000, int(xmax)))
+                    ymin = max(0, min(1000, int(ymin)))
+                    ymax = max(0, min(1000, int(ymax)))
+
+                    if xmax <= xmin or ymax <= ymin:
+                        continue
+
+                    x0 = int(round((xmin / 1000.0) * w))
+                    x1 = int(round((xmax / 1000.0) * w))
+                    y0 = int(round((ymin / 1000.0) * h))
+                    y1 = int(round((ymax / 1000.0) * h))
+
+                    # If we can OCR-locate the actual value on the rendered page,
+                    # snap the rectangle to that (much more accurate on scanned PDFs).
+                    if isinstance(item, dict):
+                        val = item.get("value")
+                        if val is not None:
+                            snapped = _ocr_best_rect(str(val))
+                            if snapped:
+                                x0, y0, x1, y1 = [int(round(v)) for v in snapped]
+
+                    # Semi-transparent yellow fill + stronger border.
+                    draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 0, 80))
+                    draw.rectangle([x0, y0, x1, y1], outline=(255, 200, 0, 255), width=border_px)
+
+                out = PIL.Image.alpha_composite(base, overlay).convert("RGB")
+
+                pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+                safe_pdf_name = re.sub(r"[^a-zA-Z0-9_-]", "_", pdf_name)[:80] or "document"
+                output_filename = f"annotated_{safe_pdf_name}_page_{page_number}.png"
+                output_path = os.path.join(settings.MEDIA_ROOT, 'temp', output_filename)
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+                out.save(output_path, format="PNG")
+                return output_path
+            finally:
+                doc.close()
+
+        except Exception as e:
+            logger.error(f"Failed to generate annotation: {e}")
+            return None
 
 class MistralOCRSmallService:
     """

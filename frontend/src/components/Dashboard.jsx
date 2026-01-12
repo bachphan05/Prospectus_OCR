@@ -2,13 +2,11 @@ import { useState, useEffect } from 'react';
 import api from '../services/api';
 import ChatPanel from './ChatPanel';
 import {
-  HighlightBox,
   DataField,
   DocumentListItem,
   DocumentHeader,
   CommentInput,
-  StatsBar,
-  getHighlightsForPage
+  StatsBar
 } from './dashboard/index';
 
 /**
@@ -23,7 +21,8 @@ function Dashboard({ refreshTrigger }) {
   const [optimizedPages, setOptimizedPages] = useState(null);
   const [loadingPages, setLoadingPages] = useState(false);
   const [selectedPage, setSelectedPage] = useState(null);
-  const [hoveredField, setHoveredField] = useState(null); // {fieldName, page, bbox}
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [hoveredField, setHoveredField] = useState(null); // For highlighting data fields (hover effect)
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedData, setEditedData] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -563,40 +562,37 @@ function Dashboard({ refreshTrigger }) {
             </button>
           </div>
 
-          {/* Image Container with Relative Positioning */}
+          {/* Image Container with Annotated Preview */}
           <div className="relative overflow-auto flex-1 bg-gray-100 p-4 flex justify-center">
-            
-            {/* Wrapper div needs "relative" so absolute children align to it */}
             <div 
               className="relative inline-block shadow-lg"
-              style={{ width: '85%' }}
+              style={{ width: '70%' }}
               onClick={(e) => e.stopPropagation()}
             >
-              {/* 1. The Page Image */}
+              {/* Loading Spinner */}
+              {loadingPreview && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75 z-10">
+                  <div className="flex flex-col items-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                    <p className="mt-2 text-sm text-gray-600">Generating preview with highlights...</p>
+                  </div>
+                </div>
+              )}
+              
+              {/* Annotated Page Image with Highlights Burned In */}
               <img
-                src={selectedPage.image}
-                alt={`Page ${selectedPage.page_number}`}
+                src={api.getPreviewPageUrl(selectedDoc.id, selectedPage.page_number)}
+                alt={`Page ${selectedPage.page_number} with highlights`}
                 className="w-full h-auto block"
+                onLoadStart={() => setLoadingPreview(true)}
+                onLoad={() => setLoadingPreview(false)}
+                onError={(e) => {
+                  setLoadingPreview(false);
+                  // Fallback to original image if preview generation fails
+                  console.warn('Preview generation failed, falling back to original image');
+                  e.target.src = selectedPage.image;
+                }}
               />
-
-              {/* 2. Bbox-Based Annotation Overlay */}
-              {selectedDoc?.extracted_data && 
-                getHighlightsForPage(selectedDoc.extracted_data, selectedPage.page_number)
-                  .map((hl) => {
-                    const isHighlighted = hoveredField && 
-                                        hoveredField.page === selectedPage.page_number &&
-                                        JSON.stringify(hoveredField.bbox) === JSON.stringify(hl.bbox);
-                    return (
-                      <HighlightBox 
-                        key={hl.id} 
-                        bbox={hl.bbox} 
-                        label={hl.label}
-                        value={hl.value}
-                        isHighlighted={isHighlighted}
-                      />
-                    );
-                  })
-              }
             </div>
 
           </div>

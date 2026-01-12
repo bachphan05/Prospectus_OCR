@@ -301,6 +301,60 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 {'error': f'Failed to extract pages: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+    
+    @action(detail=True, methods=['get'], url_path='preview-page/(?P<page_num>[0-9]+)')
+    def preview_page(self, request, pk=None, page_num=None):
+        """
+        Returns an image of a specific page with highlights burned in.
+        GET /api/documents/{id}/preview-page/{page_num}/
+        """
+        document = self.get_object()
+        page_num = int(page_num)
+        
+        # 1. Gather all bboxes for this page from extracted_data
+        bboxes_to_draw = []
+        data = document.extracted_data or {}
+        
+        # Helper recursive function to find bboxes in nested JSON
+        def find_bboxes(obj, label_prefix=''):
+            if isinstance(obj, dict):
+                # Check if this object is a field with bbox info
+                if 'bbox' in obj and 'page' in obj:
+                    if obj['page'] == page_num:
+                        bboxes_to_draw.append({
+                            'bbox': obj['bbox'],
+                            'label': label_prefix or 'Field',
+                            'value': obj.get('value')
+                        })
+                # Continue searching deeper
+                for k, v in obj.items():
+                    if k not in ['bbox', 'page', 'value']:
+                        new_label = k.replace('_', ' ').title()
+                        find_bboxes(v, label_prefix=new_label)
+            elif isinstance(obj, list):
+                for idx, item in enumerate(obj):
+                    find_bboxes(item, label_prefix=f"{label_prefix} {idx+1}" if label_prefix else f"Item {idx+1}")
+
+        find_bboxes(data)
+        
+        logger.info(f"Found {len(bboxes_to_draw)} bboxes to draw on page {page_num}")
+
+        # 2. Use Service to draw them
+        # Use optimized file if available, otherwise original
+        pdf_path = document.optimized_file.path if document.optimized_file else document.file.path
+        
+        from .services import GeminiOCRService
+        service = GeminiOCRService()
+        image_path = service.generate_annotated_image(pdf_path, page_num, bboxes_to_draw)
+        
+        if not image_path or not os.path.exists(image_path):
+            return Response(
+                {"error": "Could not generate preview"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # 3. Return the image as a file response
+        return FileResponse(open(image_path, 'rb'), content_type='image/png')
 
     @action(detail=True, methods=['get'])
     def change_logs(self, request, pk=None):
