@@ -7,6 +7,8 @@ from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 import logging
+import os
+import threading
 import fitz
 import io
 import base64
@@ -18,9 +20,11 @@ from .serializers import (
     DocumentUploadSerializer,
     DocumentListSerializer,
     ExtractedFundDataSerializer,
-    DocumentChangeLogSerializer
+    DocumentChangeLogSerializer,
+    ChatRequestSerializer,
+    ChatResponseSerializer
 )
-from .services import DocumentProcessingService
+from .services import DocumentProcessingService, RAGService
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +68,20 @@ class DocumentViewSet(viewsets.ModelViewSet):
             processing_service = DocumentProcessingService()
             processing_service.process_document(document.id)
             logger.info(f"Started processing for document {document.id}")
+
+            # Optional: start RAG ingestion immediately on upload (runs in background)
+            # This doesn't reduce total compute, but overlaps time so chat is ready sooner.
+            auto_rag = os.getenv("AUTO_RAG_INGEST_ON_UPLOAD", "").strip().lower() in {"1", "true", "yes"}
+            if auto_rag:
+                def _rag_task(doc_id: int):
+                    try:
+                        logger.info(f"AUTO_RAG_INGEST_ON_UPLOAD enabled. Starting RAG ingestion for document {doc_id}")
+                        RAGService().ingest_document(doc_id)
+                        logger.info(f"Auto RAG ingestion completed for document {doc_id}")
+                    except Exception as e:
+                        logger.error(f"Auto RAG ingestion failed for document {doc_id}: {str(e)}")
+
+                threading.Thread(target=_rag_task, args=(document.id,), daemon=True).start()
         except Exception as e:
             logger.error(f"Failed to start processing: {str(e)}")
             document.status = 'failed'
@@ -220,6 +238,19 @@ class DocumentViewSet(viewsets.ModelViewSet):
         # Start processing
         processing_service = DocumentProcessingService()
         processing_service.process_document(document.id)
+
+        # Optional: also auto-ingest for RAG on reprocess
+        auto_rag = os.getenv("AUTO_RAG_INGEST_ON_UPLOAD", "").strip().lower() in {"1", "true", "yes"}
+        if auto_rag:
+            def _rag_task(doc_id: int):
+                try:
+                    logger.info(f"AUTO_RAG_INGEST_ON_UPLOAD enabled. Starting RAG ingestion for document {doc_id}")
+                    RAGService().ingest_document(doc_id)
+                    logger.info(f"Auto RAG ingestion completed for document {doc_id}")
+                except Exception as e:
+                    logger.error(f"Auto RAG ingestion failed for document {doc_id}: {str(e)}")
+
+            threading.Thread(target=_rag_task, args=(document.id,), daemon=True).start()
         
         serializer = DocumentSerializer(document, context={'request': request})
         return Response(serializer.data)
@@ -322,6 +353,101 @@ class DocumentViewSet(viewsets.ModelViewSet):
             'completed': completed,
             'failed': failed
         })
+
+    @action(detail=True, methods=['get'])
+    def rag_status(self, request, pk=None):
+        """
+        Check if document is already ingested for RAG
+        GET /api/documents/{id}/rag_status/
+        """
+        document = self.get_object()
+        chunks_count = document.chunks.count()
+        
+        return Response({
+            'is_ingested': chunks_count > 0,
+            'chunks_count': chunks_count,
+            'document_id': document.id
+        })
+    
+    @action(detail=True, methods=['post'])
+    def ingest_for_rag(self, request, pk=None):
+        """
+        Process document for RAG (vectorize and store chunks)
+        POST /api/documents/{id}/ingest_for_rag/
+        """
+        document = self.get_object()
+        
+        if document.status != 'completed':
+            return Response(
+                {'error': 'Document must be processed successfully before RAG ingestion'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            logger.info(f"Starting RAG ingestion for document {document.id}")
+            rag_service = RAGService()
+            success = rag_service.ingest_document(document.id)
+            
+            chunks_count = document.chunks.count()
+            logger.info(f"RAG ingestion completed. Created {chunks_count} chunks.")
+            
+            return Response({
+                'message': 'Document ingested successfully for RAG',
+                'chunks_count': chunks_count,
+                'document_id': document.id
+            })
+        except Exception as e:
+            logger.error(f"RAG ingestion error for document {document.id}: {str(e)}")
+            return Response(
+                {'error': f'Failed to ingest document: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['post'])
+    def chat(self, request, pk=None):
+        """
+        Chat with document using RAG
+        POST /api/documents/{id}/chat/
+        Body: {"query": "What is the management fee?", "history": [...]}
+        """
+        document = self.get_object()
+        
+        # Check if document has been ingested
+        if not document.chunks.exists():
+            return Response(
+                {
+                    'error': 'Document not ingested yet for RAG. Please call /documents/{id}/ingest_for_rag/ first.',
+                    'chunks_count': 0
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate request data
+        serializer = ChatRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        user_query = serializer.validated_data['query']
+        history = serializer.validated_data.get('history', [])
+        
+        try:
+            logger.info(f"RAG chat query for document {document.id}: {user_query[:50]}...")
+            rag_service = RAGService()
+            answer = rag_service.chat(document.id, user_query, history)
+            
+            response_data = {
+                'answer': answer,
+                'query': user_query,
+                'chunks_count': document.chunks.count()
+            }
+            
+            return Response(response_data)
+        except Exception as e:
+            logger.error(f"RAG chat error for document {document.id}: {str(e)}")
+            return Response(
+                {'error': f'Failed to process chat: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 @api_view(['GET'])

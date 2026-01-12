@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.postgres',
     'rest_framework',
     'corsheaders',
     'api',
@@ -90,7 +91,16 @@ DATABASES = {
         'PASSWORD': tmpPostgres.password,
         'HOST': tmpPostgres.hostname,
         'PORT': 5432,
-        'OPTIONS': dict(parse_qsl(tmpPostgres.query)),
+        'OPTIONS': {
+            **dict(parse_qsl(tmpPostgres.query)),
+            # TCP Keep-Alive settings to prevent connection timeouts
+            'keepalives': 1,
+            'keepalives_idle': 30,
+            'keepalives_interval': 10,
+            'keepalives_count': 5,
+        },
+        # Reduce max age so Django recycles connections faster
+        'CONN_MAX_AGE': 60,
     }
 }
 

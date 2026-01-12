@@ -185,6 +185,64 @@ class ApiService {
   }
 
   /**
+   * Check RAG ingestion status
+   * @param {number} id - Document ID
+   * @returns {Promise} Status object
+   */
+  async ragStatus(id) {
+    const response = await fetch(`${API_BASE_URL}/documents/${id}/rag_status/`);
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to check RAG status');
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Ingest document for RAG (create vector embeddings)
+   * @param {number} id - Document ID
+   * @returns {Promise} Ingestion result
+   */
+  async ingestForRag(id) {
+    const response = await fetch(`${API_BASE_URL}/documents/${id}/ingest_for_rag/`, {
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to ingest document');
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Chat with document using RAG
+   * @param {number} id - Document ID
+   * @param {string} query - User question
+   * @param {Array} history - Chat history (optional)
+   * @returns {Promise} Chat response
+   */
+  async chatWithDocument(id, query, history = []) {
+    const response = await fetch(`${API_BASE_URL}/documents/${id}/chat/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query, history }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to chat with document');
+    }
+
+    return response.json();
+  }
+
+  /**
    * Get download URL for a document
    * @param {number} id - Document ID
    * @returns {string} Download URL

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
+import ChatPanel from './ChatPanel';
 import {
   HighlightBox,
   DataField,
@@ -30,6 +31,8 @@ function Dashboard({ refreshTrigger }) {
   const [changeLogs, setChangeLogs] = useState([]);
   const [showChangeLog, setShowChangeLog] = useState(false);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [showChatPanel, setShowChatPanel] = useState(false);
+  const [chatDocument, setChatDocument] = useState(null);
 
   useEffect(() => {
     loadDocuments();
@@ -146,6 +149,13 @@ function Dashboard({ refreshTrigger }) {
     setIsEditMode(false);
     setEditedData(null);
     setUserComment('');
+  };
+
+  const handleChat = () => {
+    if (selectedDoc && selectedDoc.status === 'completed') {
+      setChatDocument(selectedDoc);
+      setShowChatPanel(true);
+    }
   };
 
   const handleSave = async () => {
@@ -283,6 +293,7 @@ function Dashboard({ refreshTrigger }) {
                 handleCancelEdit={handleCancelEdit}
                 handleReprocess={handleReprocess}
                 handleDelete={handleDelete}
+                handleChat={handleChat}
               />
 
               {/* Comment Input (only shown in edit mode) */}
@@ -590,6 +601,14 @@ function Dashboard({ refreshTrigger }) {
 
           </div>
         </div>
+      )}
+
+      {/* Chat Panel */}
+      {showChatPanel && chatDocument && (
+        <ChatPanel 
+          document={chatDocument} 
+          onClose={() => setShowChatPanel(false)} 
+        />
       )}
     </div>
   );

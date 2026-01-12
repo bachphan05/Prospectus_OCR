@@ -1,8 +1,28 @@
 from django.db import models
 from django.contrib.postgres.fields import ArrayField
 import json
+from pgvector.django import VectorField, HnswIndex
 
+class DocumentChunk(models.Model):
+    document = models.ForeignKey('Document', on_delete=models.CASCADE, related_name='chunks')
+    content = models.TextField()
+    page_number = models.IntegerField()
+    embedding = VectorField(dimensions=768)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        indexes = [
+            # HNSW Index for fast approximate nearest neighbor search
+            HnswIndex(
+                name='chunk_embedding_idx',
+                fields=['embedding'],
+                m=16,               # Max connections per layer (Default 16)
+                ef_construction=64, # Size of dynamic candidate list (Default 64)
+                opclasses=['vector_cosine_ops'] # Optimize for Cosine Similarity
+            )
+        ]
 
+    def __str__(self):
+        return f"Chunk {self.id} - Doc {self.document.file_name} (Page {self.page_number})"
 class Document(models.Model):
     """
     Model to store document metadata and extracted financial data from PDFs

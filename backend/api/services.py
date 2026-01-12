@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 import threading
 import unicodedata
+import io
 import google.generativeai as genai
 from mistralai import Mistral
 from django.conf import settings
@@ -15,8 +16,12 @@ from django.utils import timezone
 import tempfile
 import fitz  # PyMuPDF
 from rapidocr_onnxruntime import RapidOCR
-from .models import Document, ExtractedFundData
-
+from .models import Document, ExtractedFundData, DocumentChunk
+from django.db.models import F
+from django.db import close_old_connections
+from pgvector.django import CosineDistance
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+import PIL.Image
 logger = logging.getLogger(__name__)
 
 try:
@@ -1338,3 +1343,327 @@ class DocumentProcessingService:
                         pass # Already handled or file gone
                     except OSError as e:
                         logger.warning(f"Error removing temp file: {e}")
+
+class RAGService:
+    """
+    Service for Retrieval-Augmented Generation (Chat with PDF).
+    Handles:
+    1. Extracting full text/markdown from documents.
+    2. Chunking text and generating embeddings.
+    3. Storing vectors in PostgreSQL.
+    4. Retrieving relevant chunks and answering user queries.
+    """
+
+    def __init__(self):
+        api_key = os.getenv('GEMINI_API_KEY')
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY not set")
+        
+        genai.configure(api_key=api_key)
+        self.embedding_model = "models/text-embedding-004"
+        self.chat_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+
+    def ingest_document(self, document_id: int) -> bool:
+        """
+        Process a document into vector chunks for RAG.
+        Returns True if successful.
+        """
+        try:
+            document = Document.objects.get(id=document_id)
+            logger.info(f"Starting RAG ingestion for Doc {document_id}")
+
+            # 1. Check if already ingested to avoid duplicates
+            if document.chunks.exists():
+                logger.info(f"Document {document_id} already ingested. Deleting old chunks...")
+                document.chunks.all().delete()
+
+            # 2. Extract Raw Content (optimized for Scanned PDFs)
+            # Since Mistral/Gemini services return JSON, we might not have the full text saved.
+            # We call a helper to get the raw markdown representation.
+            full_text = self._extract_content_for_rag(document)
+            
+            if not full_text:
+                raise ValueError("Could not extract text content from document")
+
+            # 3. Chunking Strategy
+            # Parse page markers (supports both formats: "--- PAGE X ---" and "=== PAGE X ===")
+            page_sections = []
+            current_page = 1
+            current_text = ""
+            
+            for line in full_text.split('\n'):
+                # Check for page markers in either format
+                is_page_marker = False
+                if ('--- PAGE ' in line and ' ---' in line) or ('=== PAGE ' in line and ' ===' in line):
+                    is_page_marker = True
+                    # Save previous page section if exists
+                    if current_text.strip():
+                        page_sections.append((current_page, current_text))
+                    # Extract new page number
+                    try:
+                        # Remove both marker formats
+                        page_str = line.strip().replace('--- PAGE ', '').replace(' ---', '')
+                        page_str = page_str.replace('=== PAGE ', '').replace(' ===', '')
+                        current_page = int(page_str)
+                        current_text = ""
+                    except ValueError:
+                        is_page_marker = False
+                
+                if not is_page_marker:
+                    current_text += line + '\n'
+            
+            # Add last section
+            if current_text.strip():
+                page_sections.append((current_page, current_text))
+            
+            logger.info(f"Parsed {len(page_sections)} page sections")
+            
+            # Split by Markdown headers to keep logical sections together
+            headers_to_split_on = [
+                ("#", "Header 1"),
+                ("##", "Header 2"),
+                ("###", "Header 3"),
+            ]
+            markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+            
+            # Process each page section separately to maintain page tracking
+            all_chunks_with_pages = []
+            for page_num, page_text in page_sections:
+                # Split by headers
+                docs = markdown_splitter.split_text(page_text)
+                
+                # Then split into smaller chunks
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=1000, 
+                    chunk_overlap=400,
+                    separators=["\n\n", "\n", ".", " ", ""]
+                )
+                split_docs = text_splitter.split_documents(docs)
+                
+                # Tag each chunk with its page number
+                for doc in split_docs:
+                    doc.metadata['page_number'] = page_num
+                    all_chunks_with_pages.append(doc)
+            
+            logger.info(f"Created {len(all_chunks_with_pages)} chunks from document.")
+
+            # 4. Generate Embeddings & Save (Batch Processing)
+            batch_size = 10  # Reduced batch size to avoid SSL timeouts
+            chunks_to_create = []
+            
+            for i in range(0, len(all_chunks_with_pages), batch_size):
+                batch = all_chunks_with_pages[i:i + batch_size]
+                batch_texts = [d.page_content for d in batch]
+                
+                # Call Gemini Embedding API with retry logic
+                max_retries = 3
+                retry_count = 0
+                embeddings = None
+                
+                while retry_count < max_retries:
+                    try:
+                        logger.info(f"Embedding batch {i//batch_size + 1}/{(len(all_chunks_with_pages) + batch_size - 1)//batch_size} ({len(batch)} chunks)")
+                        
+                        result = genai.embed_content(
+                            model=self.embedding_model,
+                            content=batch_texts,
+                            task_type="retrieval_document"
+                        )
+                        embeddings = result['embedding']
+                        break  # Success, exit retry loop
+                        
+                    except Exception as e:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            wait_time = 2 ** retry_count  # Exponential backoff: 2, 4, 8 seconds
+                            logger.warning(f"Embedding API error (attempt {retry_count}/{max_retries}): {str(e)}. Retrying in {wait_time}s...")
+                            import time
+                            time.sleep(wait_time)
+                        else:
+                            logger.error(f"Failed to embed batch after {max_retries} attempts: {str(e)}")
+                            raise
+                
+                # Prepare DB objects
+                for j, doc_chunk in enumerate(batch):
+                    # Combine header metadata into content for better context
+                    header_context = ""
+                    if 'Header 1' in doc_chunk.metadata:
+                        header_context += f"# {doc_chunk.metadata['Header 1']}\n"
+                    if 'Header 2' in doc_chunk.metadata:
+                        header_context += f"## {doc_chunk.metadata['Header 2']}\n"
+                        
+                    final_content = header_context + doc_chunk.page_content
+
+                    # Extract page number from metadata (now properly set)
+                    page_num = doc_chunk.metadata.get('page_number', 1)
+                    
+                    chunks_to_create.append(DocumentChunk(
+                        document=document,
+                        content=final_content,
+                        page_number=page_num,
+                        embedding=embeddings[j]
+                    ))
+                
+                # Save chunks incrementally every batch to avoid large transactions
+                if chunks_to_create:
+                    try:
+                        # Refresh DB connection in case it timed out during API calls
+                        close_old_connections()
+                        
+                        DocumentChunk.objects.bulk_create(chunks_to_create)
+                        logger.info(f"Saved batch {i//batch_size + 1}: {len(chunks_to_create)} chunks")
+                        chunks_to_create = []  # Clear for next batch
+                    except Exception as e:
+                        logger.error(f"Failed to save chunk batch: {str(e)}")
+                        raise
+            
+            # Final count
+            total_chunks = document.chunks.count()
+            logger.info(f"Successfully saved {total_chunks} vector chunks total.")
+            
+            return True
+
+        except Exception as e:
+            logger.error(f"RAG Ingestion Error: {str(e)}")
+            raise
+
+    def chat(self, document_id: int, user_query: str, history: list = None) -> str:
+        """
+        Answer a user question using RAG.
+        """
+        try:
+            # 1. Embed the User Query
+            query_embedding = genai.embed_content(
+                model=self.embedding_model,
+                content=user_query,
+                task_type="retrieval_query"
+            )['embedding']
+
+            # 2. Vector Search (Semantic Retrieval)
+            # Find top 5 most similar chunks for this document
+            # CosineDistance: Lower is more similar
+            relevant_chunks = DocumentChunk.objects.filter(document_id=document_id) \
+                .annotate(distance=CosineDistance('embedding', query_embedding)) \
+                .order_by('distance')[:6]
+
+            if not relevant_chunks:
+                return "I couldn't find any relevant information in this document."
+
+            # 3. Construct Context
+            context_text = "\n\n---\n\n".join([c.content for c in relevant_chunks])
+
+            # 4. Generate Answer with LLM
+            system_prompt = f"""
+            Bạn là trợ lý phân tích tài chính thông minh.
+            Sử dụng các đoạn ngữ cảnh sau từ bản cáo bạch quỹ để trả lời câu hỏi của người dùng.
+            
+            QUY TẮC:
+            1. Chỉ trả lời dựa trên ngữ cảnh được cung cấp.
+            2. Nếu ngữ cảnh không chứa câu trả lời, hãy nói "Tôi không tìm thấy thông tin đó trong tài liệu."
+            3. Trả lời ngắn gọn, chuyên nghiệp và BẰNG TIẾNG VIỆT.
+            4. Trích dẫn số trang nếu có thông tin trong metadata.
+            
+            NGỮ CẢNH:
+            {context_text}
+            """
+            
+            # Prepare chat history for Gemini
+            chat_history = []
+            if history:
+                for h in history:
+                    role = "user" if h.get('sender') == 'user' else "model"
+                    chat_history.append({"role": role, "parts": [h.get('text', '')]})
+
+            # Start chat session
+            chat = self.chat_model.start_chat(history=chat_history)
+            response = chat.send_message(f"{system_prompt}\n\nCÂU HỎI: {user_query}")
+            
+            return response.text
+
+        except Exception as e:
+            logger.error(f"RAG Chat Error: {str(e)}")
+            return "Sorry, I encountered an error while processing your request."
+
+    def _extract_content_for_rag(self, document) -> str:
+        """
+        Helper to get raw text for RAG with page markers.
+        Fixed: Processes ALL pages (no limit) and handles batching correctly.
+        """
+        import time 
+        
+        try:
+            # Use ORIGINAL uploaded PDF for RAG extraction (per product requirement)
+            # Note: this may be slower than using an optimized/segmented version.
+            file_path = document.file.path
+            if hasattr(document, 'optimized_file') and document.optimized_file:
+                logger.info(
+                    "RAG Extraction: optimized_file exists but will be ignored; using original upload instead."
+                )
+
+            logger.info(f"Extracting raw content for RAG from ORIGINAL PDF: {file_path}")
+            
+            doc = fitz.open(file_path)
+            full_text = ""
+            
+            # Process pages in batches of 15 to be safe
+            batch_size = 15
+            total_pages = len(doc)
+            
+            logger.info(f"Total pages to ingest: {total_pages}")
+            
+            for batch_start in range(0, total_pages, batch_size):
+                batch_end = min(batch_start + batch_size, total_pages)
+                logger.info(f"Processing RAG batch: Pages {batch_start + 1} to {batch_end}")
+                
+                # QUAN TRỌNG: Reset model_inputs cho mỗi batch (để không bị cộng dồn ảnh cũ)
+                model_inputs = [
+                    "ROLE: You are a strict OCR engine. Your ONLY job is to convert images to text.",
+    "TASK: Transcribe the extracted text from these images into Markdown.",
+    "RULES:",
+    "1. Do NOT start with 'Here is the text' or 'Okay'. Start directly with the content.",
+    "2. Do NOT summarize. Transcribe EXACTLY what is written, word-for-word.",
+    "3. PRESERVE ALL TABLES. Use Markdown table syntax for 'Biểu phí' (Fee Schedule) and 'Danh mục đầu tư'.",
+    "4. If a page contains numbers (fees, NAV), extract them precisely (e.g. '1,5%' not 'about 1.5%').",
+    "5. Output Vietnamese text with correct accents."
+                ]
+                
+                # Convert pages in this batch to images
+                for i in range(batch_start, batch_end):
+                    page = doc[i]
+                    # Matrix 1.5 (~108 DPI) đủ nét để đọc chữ nhỏ
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                    img_data = pix.tobytes("png")
+                    image = PIL.Image.open(io.BytesIO(img_data))
+                    model_inputs.append(image)
+                
+                # Gọi Gemini với cơ chế Retry (thử lại nếu lỗi mạng)
+                batch_text = ""
+                for attempt in range(3):
+                    try:
+                        response = self.chat_model.generate_content(model_inputs)
+                        batch_text = response.text
+                        break # Thành công -> thoát vòng lặp retry
+                    except Exception as e:
+                        wait = (attempt + 1) * 5
+                        logger.warning(f"Batch {batch_start}-{batch_end} failed (Attempt {attempt+1}): {e}. Retrying in {wait}s...")
+                        time.sleep(wait)
+                
+                if batch_text:
+                    full_text += batch_text + "\n\n"
+                else:
+                    logger.error(f"Failed to extract text for pages {batch_start+1}-{batch_end} after 3 attempts.")
+
+                # Nghỉ 2 giây giữa các batch để tránh lỗi 429 (Rate Limit)
+                time.sleep(2)
+            
+            doc.close()
+            
+            if not full_text.strip():
+                raise ValueError("Extracted text is empty")
+                
+            return full_text
+
+        except Exception as e:
+            logger.error(f"Content extraction failed: {e}")
+            # Trả về chuỗi rỗng thay vì crash để luồng chính xử lý tiếp
+            return ""

@@ -25,6 +25,19 @@ class DocumentChangeLogSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'document', 'changed_at']
 
 
+class ChatRequestSerializer(serializers.Serializer):
+    """Serializer for RAG chat requests"""
+    query = serializers.CharField(required=True, max_length=1000)
+    history = serializers.ListField(required=False, default=list, allow_empty=True)
+
+
+class ChatResponseSerializer(serializers.Serializer):
+    """Serializer for RAG chat responses"""
+    answer = serializers.CharField()
+    query = serializers.CharField()
+    chunks_count = serializers.IntegerField(required=False)
+
+
 class DocumentSerializer(serializers.ModelSerializer):
     """Serializer for document metadata and extracted data"""
     fund_data = ExtractedFundDataSerializer(read_only=True)
