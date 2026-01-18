@@ -201,6 +201,45 @@ class ApiService {
   }
 
   /**
+   * Get persisted chat history for a document
+   * @param {number} id - Document ID
+   * @returns {Promise<{history: Array}>}
+   */
+  async getChatHistory(id) {
+    const response = await fetch(`${API_BASE_URL}/documents/${id}/chat_history/`);
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || 'Failed to load chat history');
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Save persisted chat history for a document
+   * @param {number} id - Document ID
+   * @param {Array} history - Array of message objects
+   * @returns {Promise<{history: Array}>}
+   */
+  async saveChatHistory(id, history = []) {
+    const response = await fetch(`${API_BASE_URL}/documents/${id}/chat_history/`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ history }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || 'Failed to save chat history');
+    }
+
+    return response.json();
+  }
+
+  /**
    * Get preview page with highlights burned in
    * @param {number} id - Document ID
    * @param {number} pageNum - Page number (1-based)

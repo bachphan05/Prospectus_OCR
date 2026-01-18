@@ -38,6 +38,11 @@ class ChatResponseSerializer(serializers.Serializer):
     chunks_count = serializers.IntegerField(required=False)
 
 
+class ChatHistorySerializer(serializers.Serializer):
+    """Serializer for persisting chat history per document"""
+    history = serializers.ListField(required=True, allow_empty=True)
+
+
 class DocumentSerializer(serializers.ModelSerializer):
     """Serializer for document metadata and extracted data"""
     fund_data = ExtractedFundDataSerializer(read_only=True)

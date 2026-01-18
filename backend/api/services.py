@@ -1598,7 +1598,7 @@ class RAGService:
                 # Then split into smaller chunks
                 text_splitter = RecursiveCharacterTextSplitter(
                     chunk_size=1000, 
-                    chunk_overlap=400,
+                    chunk_overlap=500,
                     separators=["\n\n", "\n", ".", " ", ""]
                 )
                 split_docs = text_splitter.split_documents(docs)
@@ -1695,40 +1695,85 @@ class RAGService:
         Answer a user question using RAG.
         """
         try:
-            # 1. Embed the User Query
-            query_embedding = genai.embed_content(
-                model=self.embedding_model,
-                content=user_query,
-                task_type="retrieval_query"
-            )['embedding']
+            document = Document.objects.get(id=document_id)
 
-            # 2. Vector Search (Semantic Retrieval)
-            # Find top 5 most similar chunks for this document
-            # CosineDistance: Lower is more similar
-            relevant_chunks = DocumentChunk.objects.filter(document_id=document_id) \
-                .annotate(distance=CosineDistance('embedding', query_embedding)) \
-                .order_by('distance')[:6]
+            # 1. Lấy dữ liệu cấu trúc đã trích xuất ("Phao cứu sinh" cho câu hỏi về phí, tên, mã...)
+            structured_info = ""
 
-            if not relevant_chunks:
-                return "I couldn't find any relevant information in this document."
+            extracted_data = document.extracted_data or {}
+            minimum_investment = extracted_data.get('minimum_investment')
+            investment_objective = extracted_data.get('investment_objective')
+            asset_allocation = extracted_data.get('asset_allocation')
+            inception_date = extracted_data.get('inception_date')
+            effective_date = extracted_data.get('effective_date')
 
-            # 3. Construct Context
-            context_text = "\n\n---\n\n".join([c.content for c in relevant_chunks])
+            try:
+                fund_data = ExtractedFundData.objects.get(document_id=document_id)
+                structured_info = f"""
+THÔNG TIN CƠ BẢN ĐÃ ĐƯỢC TRÍCH XUẤT (ƯU TIÊN DÙNG CHO CÂU HỎI VỀ PHÍ / TÊN / MÃ / NGÂN HÀNG):
+- Tên quỹ: {fund_data.fund_name}
+- Mã quỹ: {fund_data.fund_code}
+- Công ty quản lý: {fund_data.management_company}
+- Ngân hàng giám sát: {fund_data.custodian_bank}
+- Phí quản lý: {fund_data.management_fee}
+- Phí phát hành (mua): {fund_data.subscription_fee}
+- Phí mua lại (bán): {fund_data.redemption_fee}
+- Phí chuyển đổi: {fund_data.switching_fee}
+- Ngày thành lập/quỹ bắt đầu hoạt động (inception_date): {inception_date or 'Không có'}
+- Ngày hiệu lực (effective_date): {effective_date or 'Không có'}
+- Mục tiêu đầu tư: {investment_objective or 'Không có'}
+- Số tiền đầu tư tối thiểu (ban đầu / bổ sung): {json.dumps(minimum_investment or {}, ensure_ascii=False)}
+- Cơ cấu phân bổ tài sản: {json.dumps(asset_allocation or {}, ensure_ascii=False)}
+- Danh mục đầu tư (trích xuất): {json.dumps(fund_data.portfolio or [], ensure_ascii=False)}
+""".strip()
+            except ExtractedFundData.DoesNotExist:
+                structured_info = f"""
+THÔNG TIN CƠ BẢN ĐÃ ĐƯỢC TRÍCH XUẤT (từ Document.extracted_data):
+- Ngày thành lập/quỹ bắt đầu hoạt động (inception_date): {inception_date or 'Không có'}
+- Ngày hiệu lực (effective_date): {effective_date or 'Không có'}
+- Mục tiêu đầu tư: {investment_objective or 'Không có'}
+- Số tiền đầu tư tối thiểu (ban đầu / bổ sung): {json.dumps(minimum_investment or {}, ensure_ascii=False)}
+- Cơ cấu phân bổ tài sản: {json.dumps(asset_allocation or {}, ensure_ascii=False)}
+""".strip()
 
-            # 4. Generate Answer with LLM
+            # 2. Vector Search (Semantic Retrieval) cho câu hỏi giải thích / chiến lược / rủi ro...
+            rag_context = ""
+            try:
+                query_embedding = genai.embed_content(
+                    model=self.embedding_model,
+                    content=user_query,
+                    task_type="retrieval_query"
+                )['embedding']
+
+                relevant_chunks = DocumentChunk.objects.filter(document_id=document_id) \
+                    .annotate(distance=CosineDistance('embedding', query_embedding)) \
+                    .order_by('distance')[:15]
+
+                rag_context = "\n\n---\n\n".join(
+                    [f"=== PAGE {c.page_number} ===\n{c.content}" for c in relevant_chunks]
+                )
+            except Exception as e:
+                logger.warning(f"RAG retrieval failed for document {document_id}: {str(e)}")
+                rag_context = ""
+
+            # 3. Tổng hợp Prompt: dùng cả JSON + Vector
             system_prompt = f"""
-            Bạn là trợ lý phân tích tài chính thông minh.
-            Sử dụng các đoạn ngữ cảnh sau từ bản cáo bạch quỹ để trả lời câu hỏi của người dùng.
-            
-            QUY TẮC:
-            1. Chỉ trả lời dựa trên ngữ cảnh được cung cấp.
-            2. Nếu ngữ cảnh không chứa câu trả lời, hãy nói "Tôi không tìm thấy thông tin đó trong tài liệu."
-            3. Trả lời ngắn gọn, chuyên nghiệp và BẰNG TIẾNG VIỆT.
-            4. Trích dẫn số trang nếu có thông tin trong metadata.
-            
-            NGỮ CẢNH:
-            {context_text}
-            """
+Bạn là trợ lý phân tích tài chính thông minh chuyên về Quỹ đầu tư.
+
+HÃY SỬ DỤNG CẢ HAI NGUỒN THÔNG TIN SAU ĐỂ TRẢ LỜI:
+
+NGUỒN 1: DỮ LIỆU CẤU TRÚC (ƯU TIÊN dùng cho câu hỏi về Phí, Tên, Mã số, Ngân hàng, Công ty quản lý)
+{structured_info}
+
+NGUỒN 2: TRÍCH ĐOẠN VĂN BẢN CHI TIẾT (dùng cho câu hỏi giải thích, chiến lược, rủi ro, điều khoản...)
+{rag_context}
+
+QUY TẮC:
+1. Nếu người dùng hỏi về Phí hoặc Số liệu cụ thể, hãy kiểm tra NGUỒN 1 trước.
+2. Nếu NGUỒN 1 không có / không đủ, hãy dùng NGUỒN 2.
+3. Trả lời bằng tiếng Việt, ngắn gọn, chuyên nghiệp.
+4. Nếu không tìm thấy thông tin từ cả hai nguồn, hãy nói: "Tôi không tìm thấy thông tin đó trong tài liệu."
+""".strip()
             
             # Prepare chat history for Gemini
             chat_history = []
@@ -1745,7 +1790,7 @@ class RAGService:
 
         except Exception as e:
             logger.error(f"RAG Chat Error: {str(e)}")
-            return "Sorry, I encountered an error while processing your request."
+            return "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
 
     def _extract_content_for_rag(self, document) -> str:
         """
@@ -1781,13 +1826,14 @@ class RAGService:
                 # QUAN TRỌNG: Reset model_inputs cho mỗi batch (để không bị cộng dồn ảnh cũ)
                 model_inputs = [
                     "ROLE: You are a strict OCR engine. Your ONLY job is to convert images to text.",
-    "TASK: Transcribe the extracted text from these images into Markdown.",
-    "RULES:",
-    "1. Do NOT start with 'Here is the text' or 'Okay'. Start directly with the content.",
-    "2. Do NOT summarize. Transcribe EXACTLY what is written, word-for-word.",
-    "3. PRESERVE ALL TABLES. Use Markdown table syntax for 'Biểu phí' (Fee Schedule) and 'Danh mục đầu tư'.",
-    "4. If a page contains numbers (fees, NAV), extract them precisely (e.g. '1,5%' not 'about 1.5%').",
-    "5. Output Vietnamese text with correct accents."
+                    "TASK: Transcribe the extracted text from these images into Markdown.",
+                    "OUTPUT FORMAT (CRITICAL): For EACH page, you MUST start its transcription with a single line exactly like: === PAGE N === (N is the page number provided in the text right before the image).",
+                    "RULES:",
+                    "1. Do NOT add any intro like 'Here is the text' or 'Okay'.",
+                    "2. Do NOT summarize. Transcribe EXACTLY what is written, word-for-word.",
+                    "3. PRESERVE ALL TABLES. Use Markdown table syntax for 'Biểu phí' (Fee Schedule) and 'Danh mục đầu tư'.",
+                    "4. If a page contains numbers (fees, NAV, dates), extract them precisely.",
+                    "5. Output Vietnamese text with correct accents."
                 ]
                 
                 # Convert pages in this batch to images
@@ -1797,6 +1843,8 @@ class RAGService:
                     pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                     img_data = pix.tobytes("png")
                     image = PIL.Image.open(io.BytesIO(img_data))
+                    # Provide a deterministic page marker right before the image
+                    model_inputs.append(f"=== PAGE {i + 1} ===")
                     model_inputs.append(image)
                 
                 # Gọi Gemini với cơ chế Retry (thử lại nếu lỗi mạng)

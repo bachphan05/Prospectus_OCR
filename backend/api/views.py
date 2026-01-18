@@ -22,7 +22,8 @@ from .serializers import (
     ExtractedFundDataSerializer,
     DocumentChangeLogSerializer,
     ChatRequestSerializer,
-    ChatResponseSerializer
+    ChatResponseSerializer,
+    ChatHistorySerializer
 )
 from .services import DocumentProcessingService, RAGService
 
@@ -502,6 +503,32 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 {'error': f'Failed to process chat: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=True, methods=['get', 'put'], url_path='chat_history')
+    def chat_history(self, request, pk=None):
+        """Persist / restore chat history for a document.
+
+        GET  /api/documents/{id}/chat_history/ -> {"history": [...]}
+        PUT  /api/documents/{id}/chat_history/ with body {"history": [...]} to overwrite.
+        """
+        document = self.get_object()
+
+        if request.method.lower() == 'get':
+            return Response({'history': document.chat_history or []})
+
+        serializer = ChatHistorySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        history = serializer.validated_data.get('history', [])
+        # Keep it bounded to avoid unbounded DB growth.
+        max_messages = 200
+        if isinstance(history, list) and len(history) > max_messages:
+            history = history[-max_messages:]
+
+        document.chat_history = history
+        document.save(update_fields=['chat_history'])
+        return Response({'history': document.chat_history or []})
 
 
 @api_view(['GET'])

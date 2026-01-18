@@ -12,11 +12,46 @@ function ChatPanel({ document, onClose }) {
   const [isIngested, setIsIngested] = useState(false);
   const [error, setError] = useState(null);
   const messagesEndRef = useRef(null);
+  const hasLoadedHistoryRef = useRef(false);
+  const saveDebounceRef = useRef(null);
 
   useEffect(() => {
-    // Check if document is already ingested
+    // Load persisted chat history (if any) then check ingestion.
+    hasLoadedHistoryRef.current = false;
+    setMessages([]);
+    setError(null);
+    loadChatHistory();
     checkIngestionStatus();
   }, [document]);
+
+  useEffect(() => {
+    // Persist chat history (debounced) whenever messages change.
+    if (!document?.id) return;
+    if (!hasLoadedHistoryRef.current) return;
+
+    if (saveDebounceRef.current) {
+      clearTimeout(saveDebounceRef.current);
+    }
+
+    saveDebounceRef.current = setTimeout(() => {
+      const historyToSave = (messages || []).map((m) => ({
+        sender: m.sender,
+        text: m.text,
+        timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : new Date().toISOString(),
+        chunks_count: m.chunks_count,
+      }));
+
+      api.saveChatHistory(document.id, historyToSave).catch((err) => {
+        console.warn('Failed to save chat history:', err);
+      });
+    }, 500);
+
+    return () => {
+      if (saveDebounceRef.current) {
+        clearTimeout(saveDebounceRef.current);
+      }
+    };
+  }, [messages, document?.id]);
 
   useEffect(() => {
     // Auto-scroll to bottom when new messages arrive
@@ -27,18 +62,46 @@ function ChatPanel({ document, onClose }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  const loadChatHistory = async () => {
+    if (!document?.id) return;
+
+    try {
+      const res = await api.getChatHistory(document.id);
+      const saved = Array.isArray(res?.history) ? res.history : [];
+
+      if (saved.length > 0) {
+        setMessages(
+          saved.map((m) => ({
+            sender: m.sender,
+            text: m.text,
+            timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+            chunks_count: m.chunks_count,
+          }))
+        );
+      }
+    } catch (err) {
+      console.warn('Failed to load chat history:', err);
+    } finally {
+      hasLoadedHistoryRef.current = true;
+    }
+  };
+
   const checkIngestionStatus = async () => {
     try {
       const result = await api.ragStatus(document.id);
       if (result.is_ingested) {
         setIsIngested(true);
-        setMessages([
-          {
-            sender: 'system',
-            text: `✅ Document ready! ${result.chunks_count} knowledge chunks available. You can ask questions now.`,
-            timestamp: new Date(),
-          },
-        ]);
+        // Only inject the default system message if there's no existing conversation.
+        setMessages((prev) => {
+          if (Array.isArray(prev) && prev.length > 0) return prev;
+          return [
+            {
+              sender: 'system',
+              text: `✅ Document ready! ${result.chunks_count} knowledge chunks available. You can ask questions now.`,
+              timestamp: new Date(),
+            },
+          ];
+        });
       }
     } catch (err) {
       console.error('Failed to check ingestion status:', err);
@@ -53,18 +116,39 @@ function ChatPanel({ document, onClose }) {
     try {
       const result = await api.ingestForRag(document.id);
       setIsIngested(true);
-      setMessages([
-        {
-          sender: 'system',
-          text: `✅ Document processed! Created ${result.chunks_count} knowledge chunks. You can now ask questions about this document.`,
-          timestamp: new Date(),
-        },
-      ]);
+      setMessages((prev) => {
+        if (Array.isArray(prev) && prev.length > 0) return prev;
+        return [
+          {
+            sender: 'system',
+            text: `✅ Document processed! Created ${result.chunks_count} knowledge chunks. You can now ask questions about this document.`,
+            timestamp: new Date(),
+          },
+        ];
+      });
     } catch (err) {
       console.error('Ingestion error:', err);
       setError(err.message || 'Failed to process document for chat');
     } finally {
       setIsIngesting(false);
+    }
+  };
+
+  const handleClose = async () => {
+    try {
+      if (document?.id && hasLoadedHistoryRef.current) {
+        const historyToSave = (messages || []).map((m) => ({
+          sender: m.sender,
+          text: m.text,
+          timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : new Date().toISOString(),
+          chunks_count: m.chunks_count,
+        }));
+        await api.saveChatHistory(document.id, historyToSave);
+      }
+    } catch (err) {
+      console.warn('Failed to save chat history on close:', err);
+    } finally {
+      onClose();
     }
   };
 
@@ -152,7 +236,7 @@ function ChatPanel({ document, onClose }) {
             </div>
           </div>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="text-white hover:bg-blue-800 rounded-full p-2 transition-colors"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

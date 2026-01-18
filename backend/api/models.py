@@ -58,6 +58,10 @@ class Document(models.Model):
     
     # Extracted data (stored as JSON)
     extracted_data = models.JSONField(null=True, blank=True)
+
+    # Persisted chat history for the document (list of messages)
+    # Stored as JSON so the frontend can restore conversations when reopening.
+    chat_history = models.JSONField(default=list, blank=True)
     
     # Optimized PDF file (containing only relevant pages)
     optimized_file = models.FileField(upload_to='optimized_documents/%Y/%m/%d/', null=True, blank=True)
