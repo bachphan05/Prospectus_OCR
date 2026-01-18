@@ -1,8 +1,11 @@
 import os
 from mistralai import Mistral
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Khai báo Key
-api_key = "GJlqoCHFbhHNrnw6J5KIOz1SNpaWHrwj" # Lưu ý: Nên dùng biến môi trường để bảo mật
+api_key = os.getenv("MISTRAL_API_KEY") 
 
 try:
     # Khởi tạo client theo SDK mới nhất
