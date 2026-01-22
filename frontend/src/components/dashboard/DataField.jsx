@@ -69,7 +69,7 @@ const DataField = ({ label, field, fieldName, editable, isEditMode, editedData, 
         <span>{displayValue}</span>
         {info && (
           <span className="ml-2 text-xs text-gray-500 italic font-normal opacity-0 group-hover:opacity-100 transition-opacity">
-            (Page {info.page})
+            Page {info.page} (Trang {info.page})
           </span>
         )}
       </dd>
