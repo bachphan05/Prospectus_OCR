@@ -2063,6 +2063,25 @@ class RAGService:
         try:
             document = Document.objects.get(id=document_id)
 
+            def get_value(field_data):
+                if isinstance(field_data, dict) and 'value' in field_data:
+                    return field_data['value']
+                return field_data
+
+            def safe_text(val, max_len: int = 1200) -> str:
+                if val is None:
+                    return "Không có"
+                if isinstance(val, (dict, list)):
+                    try:
+                        val = json.dumps(val, ensure_ascii=False)
+                    except Exception:
+                        val = str(val)
+                val = str(val)
+                val = val.strip()
+                if not val:
+                    return "Không có"
+                return val if len(val) <= max_len else (val[:max_len] + " …")
+
             # 1. Lấy dữ liệu cấu trúc đã trích xuất ("Phao cứu sinh" cho câu hỏi về phí, tên, mã...)
             structured_info = ""
 
@@ -2073,21 +2092,65 @@ class RAGService:
             inception_date = extracted_data.get('inception_date')
             effective_date = extracted_data.get('effective_date')
 
+            fees_extracted = extracted_data.get('fees') or {}
+            operational_details = extracted_data.get('operational_details') or {}
+            valuation = extracted_data.get('valuation') or {}
+            risk_factors = extracted_data.get('risk_factors') or {}
+
             try:
                 fund_data = ExtractedFundData.objects.get(document_id=document_id)
                 structured_info = f"""
 THÔNG TIN CƠ BẢN ĐÃ ĐƯỢC TRÍCH XUẤT (ƯU TIÊN DÙNG CHO CÂU HỎI VỀ PHÍ / TÊN / MÃ / NGÂN HÀNG):
 - Tên quỹ: {fund_data.fund_name}
 - Mã quỹ: {fund_data.fund_code}
+- Loại quỹ (fund_type): {safe_text(fund_data.fund_type, 300)}
+- Cấu trúc pháp lý (legal_structure): {safe_text(fund_data.legal_structure, 300)}
+- Số giấy phép (license_number): {safe_text(fund_data.license_number, 300)}
+- Cơ quan quản lý (regulator): {safe_text(fund_data.regulator, 300)}
 - Công ty quản lý: {fund_data.management_company}
 - Ngân hàng giám sát: {fund_data.custodian_bank}
+- Người/đơn vị giám sát quỹ (fund_supervisor): {safe_text(fund_data.fund_supervisor, 300)}
+- Kiểm toán (auditor): {safe_text(fund_data.auditor, 300)}
+
 - Phí quản lý: {fund_data.management_fee}
 - Phí phát hành (mua): {fund_data.subscription_fee}
 - Phí mua lại (bán): {fund_data.redemption_fee}
 - Phí chuyển đổi: {fund_data.switching_fee}
+- Tổng chi phí (TER): {safe_text(fund_data.total_expense_ratio, 300)}
+- Phí lưu ký: {safe_text(fund_data.custody_fee, 300)}
+- Phí kiểm toán: {safe_text(fund_data.audit_fee, 300)}
+- Phí giám sát: {safe_text(fund_data.supervisory_fee, 300)}
+- Chi phí khác: {safe_text(fund_data.other_expenses, 600)}
+
 - Ngày thành lập/quỹ bắt đầu hoạt động (inception_date): {inception_date or 'Không có'}
 - Ngày hiệu lực (effective_date): {effective_date or 'Không có'}
 - Mục tiêu đầu tư: {investment_objective or 'Không có'}
+- Chiến lược đầu tư: {safe_text(fund_data.investment_strategy, 900)}
+- Phong cách đầu tư: {safe_text(fund_data.investment_style, 200)}
+- Ngành/nhóm tài sản trọng tâm: {safe_text(fund_data.sector_focus, 600)}
+- Benchmark: {safe_text(fund_data.benchmark, 300)}
+
+- Hạn chế đầu tư: {safe_text(fund_data.investment_restrictions, 900)}
+- Giới hạn vay (borrowing_limit): {safe_text(fund_data.borrowing_limit, 300)}
+- Giới hạn đòn bẩy (leverage_limit): {safe_text(fund_data.leverage_limit, 300)}
+
+- Thông tin giao dịch (trading_frequency): {safe_text(fund_data.trading_frequency, 300)}
+- Cut-off time: {safe_text(fund_data.cut_off_time, 300)}
+- Tần suất tính NAV: {safe_text(fund_data.nav_calculation_frequency, 300)}
+- Công bố NAV: {safe_text(fund_data.nav_publication, 300)}
+- Chu kỳ thanh toán (settlement_cycle): {safe_text(fund_data.settlement_cycle, 300)}
+
+- Phương pháp định giá: {safe_text(fund_data.valuation_method, 900)}
+- Nguồn giá: {safe_text(fund_data.pricing_source, 900)}
+
+- Quyền nhà đầu tư: {safe_text(fund_data.investor_rights, 900)}
+- Đại lý phân phối: {safe_text(fund_data.distribution_agent, 400)}
+- Kênh phân phối: {safe_text(fund_data.sales_channels, 600)}
+
+- Rủi ro tập trung: {safe_text(fund_data.concentration_risk, 700)}
+- Rủi ro thanh khoản: {safe_text(fund_data.liquidity_risk, 700)}
+- Rủi ro lãi suất: {safe_text(fund_data.interest_rate_risk, 700)}
+
 - Số tiền đầu tư tối thiểu (ban đầu / bổ sung): {json.dumps(minimum_investment or {}, ensure_ascii=False)}
 - Cơ cấu phân bổ tài sản: {json.dumps(asset_allocation or {}, ensure_ascii=False)}
 - Danh mục đầu tư (trích xuất): {json.dumps(fund_data.portfolio or [], ensure_ascii=False)}
@@ -2098,6 +2161,13 @@ THÔNG TIN CƠ BẢN ĐÃ ĐƯỢC TRÍCH XUẤT (từ Document.extracted_data):
 - Ngày thành lập/quỹ bắt đầu hoạt động (inception_date): {inception_date or 'Không có'}
 - Ngày hiệu lực (effective_date): {effective_date or 'Không có'}
 - Mục tiêu đầu tư: {investment_objective or 'Không có'}
+- Chiến lược đầu tư: {safe_text(get_value(extracted_data.get('investment_strategy')), 900)}
+- Phí (fees): {safe_text(fees_extracted, 900)}
+- Thông tin giao dịch (operational_details): {safe_text(operational_details, 900)}
+- Định giá (valuation): {safe_text(valuation, 900)}
+- Hạn chế/giới hạn đầu tư: {safe_text(get_value(extracted_data.get('investment_restrictions')) or get_value(extracted_data.get('borrowing_limit')) or get_value(extracted_data.get('leverage_limit')), 900)}
+- Quyền NĐT / Phân phối: {safe_text(get_value(extracted_data.get('investor_rights')) or get_value(extracted_data.get('distribution_agent')) or get_value(extracted_data.get('sales_channels')), 900)}
+- Rủi ro (risk_factors): {safe_text(risk_factors, 900)}
 - Số tiền đầu tư tối thiểu (ban đầu / bổ sung): {json.dumps(minimum_investment or {}, ensure_ascii=False)}
 - Cơ cấu phân bổ tài sản: {json.dumps(asset_allocation or {}, ensure_ascii=False)}
 """.strip()
@@ -2175,9 +2245,15 @@ QUY TẮC:
                 )
 
             logger.info(f"Extracting raw content for RAG from ORIGINAL PDF: {file_path}")
+
+            if not file_path or not os.path.exists(file_path):
+                raise ValueError(f"PDF file not found on disk: {file_path}")
             
-            doc = fitz.open(file_path)
+            doc = None
             full_text = ""
+            last_error: str | None = None
+
+            doc = fitz.open(file_path)
             
             # Process pages in batches of 15 to be safe
             batch_size = 15
@@ -2188,6 +2264,8 @@ QUY TẮC:
             for batch_start in range(0, total_pages, batch_size):
                 batch_end = min(batch_start + batch_size, total_pages)
                 logger.info(f"Processing RAG batch: Pages {batch_start + 1} to {batch_end}")
+
+                batch_parts: list[str] = []
                 
                 # QUAN TRỌNG: Reset model_inputs cho mỗi batch (để không bị cộng dồn ảnh cũ)
                 model_inputs = [
@@ -2201,42 +2279,74 @@ QUY TẮC:
                     "4. If a page contains numbers (fees, NAV, dates), extract them precisely.",
                     "5. Output Vietnamese text with correct accents."
                 ]
+
+                ocr_pages_in_batch = 0
                 
                 # Convert pages in this batch to images
                 for i in range(batch_start, batch_end):
                     page = doc[i]
-                    # Matrix 1.5 (~108 DPI) đủ nét để đọc chữ nhỏ
-                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                    img_data = pix.tobytes("png")
-                    image = PIL.Image.open(io.BytesIO(img_data))
-                    # Provide a deterministic page marker right before the image
-                    model_inputs.append(f"=== PAGE {i + 1} ===")
-                    model_inputs.append(image)
+
+                    # 1) Fast path for digital PDFs: extract selectable text directly.
+                    try:
+                        direct_text = page.get_text("text")
+                    except Exception:
+                        direct_text = ""
+
+                    if direct_text and direct_text.strip() and len(direct_text.strip()) >= 50:
+                        batch_parts.append(f"=== PAGE {i + 1} ===\n{direct_text.strip()}")
+                        continue
+
+                    # 2) Fallback for scanned pages: OCR via Gemini on rendered image.
+                    try:
+                        # Slightly lower scale to reduce request size / failures.
+                        pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2), alpha=False)
+                        img_data = pix.tobytes("png")
+                        image = PIL.Image.open(io.BytesIO(img_data)).convert("RGB")
+                        # Detach underlying buffer so it stays valid.
+                        image.load()
+                        image = image.copy()
+                        model_inputs.append(f"=== PAGE {i + 1} ===")
+                        model_inputs.append(image)
+                        ocr_pages_in_batch += 1
+                    except Exception as e:
+                        last_error = f"Render page {i + 1} failed: {e}"
+                        logger.warning(last_error)
                 
                 # Gọi Gemini với cơ chế Retry (thử lại nếu lỗi mạng)
-                batch_text = ""
-                for attempt in range(3):
-                    try:
-                        response = self.chat_model.generate_content(model_inputs)
-                        batch_text = response.text
-                        break # Thành công -> thoát vòng lặp retry
-                    except Exception as e:
-                        wait = (attempt + 1) * 5
-                        logger.warning(f"Batch {batch_start}-{batch_end} failed (Attempt {attempt+1}): {e}. Retrying in {wait}s...")
-                        time.sleep(wait)
-                
-                if batch_text:
-                    full_text += batch_text + "\n\n"
-                else:
-                    logger.error(f"Failed to extract text for pages {batch_start+1}-{batch_end} after 3 attempts.")
+                if ocr_pages_in_batch > 0:
+                    batch_text = ""
+                    for attempt in range(3):
+                        try:
+                            response = self.chat_model.generate_content(model_inputs)
+                            batch_text = response.text or ""
+                            if batch_text.strip():
+                                break  # success
+                            last_error = f"Gemini OCR returned empty text for batch {batch_start + 1}-{batch_end} (attempt {attempt + 1})"
+                            logger.warning(last_error)
+                        except Exception as e:
+                            wait = (attempt + 1) * 5
+                            last_error = f"Gemini OCR failed for batch {batch_start + 1}-{batch_end} (attempt {attempt + 1}): {e}"
+                            logger.warning(f"{last_error}. Retrying in {wait}s...")
+                            time.sleep(wait)
+
+                    if batch_text.strip():
+                        batch_parts.append(batch_text.strip())
+                    else:
+                        logger.error(
+                            f"Failed to extract OCR text for pages {batch_start + 1}-{batch_end} after 3 attempts."
+                        )
+
+                if batch_parts:
+                    full_text += "\n\n".join(batch_parts) + "\n\n"
 
                 # Nghỉ 2 giây giữa các batch để tránh lỗi 429 (Rate Limit)
                 time.sleep(2)
-            
-            doc.close()
+
+            if doc is not None:
+                doc.close()
             
             if not full_text.strip():
-                raise ValueError("Extracted text is empty")
+                raise ValueError(f"Extracted text is empty. Last error: {last_error or 'unknown'}")
                 
             return full_text
 

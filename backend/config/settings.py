@@ -179,6 +179,8 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Media files (uploaded by users)
 MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 # CORS settings
 CORS_ALLOWED_ORIGINS = _get_list_env(
     "CORS_ALLOWED_ORIGINS",
