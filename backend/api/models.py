@@ -55,6 +55,20 @@ class Document(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     ocr_model = models.CharField(max_length=20, choices=OCR_MODEL_CHOICES, default='gemini')
     error_message = models.TextField(blank=True, null=True)
+
+    # RAG ingestion status (chunking + embedding)
+    RAG_STATUS_CHOICES = [
+        ('not_started', 'Not Started'),
+        ('queued', 'Queued'),
+        ('running', 'Running'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+    rag_status = models.CharField(max_length=20, choices=RAG_STATUS_CHOICES, default='not_started')
+    rag_progress = models.PositiveSmallIntegerField(default=0, help_text='0-100')
+    rag_error_message = models.TextField(blank=True, null=True)
+    rag_started_at = models.DateTimeField(null=True, blank=True)
+    rag_completed_at = models.DateTimeField(null=True, blank=True)
     
     # Extracted data (stored as JSON)
     extracted_data = models.JSONField(null=True, blank=True)
@@ -78,6 +92,7 @@ class Document(models.Model):
         indexes = [
             models.Index(fields=['-uploaded_at']),
             models.Index(fields=['status']),
+            models.Index(fields=['rag_status']),
         ]
     
     def __str__(self):

@@ -1,5 +1,3 @@
-import api from '../../services/api';
-
 /**
  * DocumentHeader Component - Header with title, edit/save buttons, and actions
  */

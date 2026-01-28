@@ -8,6 +8,7 @@ import api from '../services/api';
 function FileUpload({ onUploadSuccess }) {
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState('');
   const [ocrModel, setOcrModel] = useState('gemini');
@@ -66,10 +67,15 @@ function FileUpload({ onUploadSuccess }) {
     }
 
     setUploading(true);
+    setUploadProgress(0);
     setError('');
 
     try {
-      const response = await api.uploadDocument(file, ocrModel);
+      const response = await api.uploadDocument(file, ocrModel, (pct) => {
+        if (typeof pct === 'number' && !Number.isNaN(pct)) {
+          setUploadProgress(pct);
+        }
+      });
       console.log('Upload successful:', response);
       
       // Clear file selection
@@ -232,13 +238,28 @@ function FileUpload({ onUploadSuccess }) {
               {uploading ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  Uploading... (Đang tải lên...)
+                  Uploading... {uploadProgress}% (Đang tải lên...)
                 </>
               ) : (
                 'Upload & Process (Tải lên & Xử lý)'
               )}
             </button>
           </div>
+
+          {uploading && (
+            <div className="mt-4">
+              <div className="flex justify-between text-xs text-gray-600 mb-1">
+                <span>Upload progress</span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className="h-2 bg-blue-600 transition-all"
+                  style={{ width: `${Math.min(Math.max(uploadProgress, 0), 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

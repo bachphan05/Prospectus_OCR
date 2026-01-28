@@ -64,6 +64,42 @@ class DocumentViewSet(viewsets.ModelViewSet):
         
         # Save document
         document = serializer.save()
+
+        # Start RAG ingestion immediately after upload (runs in background)
+        # This overlaps the 5-7 minute chunking/embedding time with OCR extraction.
+        auto_rag_raw = os.getenv("AUTO_RAG_INGEST_ON_UPLOAD", "true").strip().lower()
+        auto_rag_enabled = auto_rag_raw not in {"0", "false", "no", "off"}
+        if auto_rag_enabled:
+            try:
+                # Mark queued so the UI can show progress right away
+                Document.objects.filter(id=document.id).update(
+                    rag_status='queued',
+                    rag_progress=0,
+                    rag_error_message=None,
+                    rag_started_at=None,
+                    rag_completed_at=None,
+                )
+            except Exception:
+                pass
+
+            def _rag_task(doc_id: int):
+                try:
+                    from django.db import close_old_connections
+
+                    close_old_connections()
+                    doc = Document.objects.get(id=doc_id)
+
+                    # Avoid duplicate ingestion
+                    if getattr(doc, 'rag_status', None) in {'running', 'completed'} or doc.chunks.exists():
+                        return
+
+                    logger.info(f"AUTO_RAG_INGEST_ON_UPLOAD: starting RAG ingestion for document {doc_id}")
+                    RAGService().ingest_document(doc_id)
+                    close_old_connections()
+                except Exception as e:
+                    logger.error(f"AUTO_RAG_INGEST_ON_UPLOAD: RAG ingestion failed for document {doc_id}: {str(e)}")
+
+            threading.Thread(target=_rag_task, args=(document.id,), daemon=True).start()
         
         # Start async processing
         try:
@@ -71,19 +107,8 @@ class DocumentViewSet(viewsets.ModelViewSet):
             processing_service.process_document(document.id)
             logger.info(f"Started processing for document {document.id}")
 
-            # Optional: start RAG ingestion immediately on upload (runs in background)
-            # This doesn't reduce total compute, but overlaps time so chat is ready sooner.
-            auto_rag = os.getenv("AUTO_RAG_INGEST_ON_UPLOAD", "").strip().lower() in {"1", "true", "yes"}
-            if auto_rag:
-                def _rag_task(doc_id: int):
-                    try:
-                        logger.info(f"AUTO_RAG_INGEST_ON_UPLOAD enabled. Starting RAG ingestion for document {doc_id}")
-                        RAGService().ingest_document(doc_id)
-                        logger.info(f"Auto RAG ingestion completed for document {doc_id}")
-                    except Exception as e:
-                        logger.error(f"Auto RAG ingestion failed for document {doc_id}: {str(e)}")
-
-                threading.Thread(target=_rag_task, args=(document.id,), daemon=True).start()
+            # RAG ingestion now starts automatically after processing completes
+            # (see DocumentProcessingService._process_document_task).
         except Exception as e:
             logger.error(f"Failed to start processing: {str(e)}")
             document.status = 'failed'
@@ -489,7 +514,12 @@ class DocumentViewSet(viewsets.ModelViewSet):
         return Response({
             'is_ingested': chunks_count > 0,
             'chunks_count': chunks_count,
-            'document_id': document.id
+            'document_id': document.id,
+            'rag_status': getattr(document, 'rag_status', None),
+            'rag_progress': getattr(document, 'rag_progress', None),
+            'rag_error_message': getattr(document, 'rag_error_message', None),
+            'rag_started_at': getattr(document, 'rag_started_at', None),
+            'rag_completed_at': getattr(document, 'rag_completed_at', None),
         })
     
     @action(detail=True, methods=['post'])
@@ -521,9 +551,19 @@ class DocumentViewSet(viewsets.ModelViewSet):
             })
         except Exception as e:
             logger.error(f"RAG ingestion error for document {document.id}: {str(e)}")
+
+            # Treat common ingestion failures as client-visible 400s (missing files / no extractable text).
+            msg = str(e)
+            is_expected = isinstance(e, ValueError) and (
+                'not found on disk' in msg
+                or 'No PDF file found on disk' in msg
+                or 'Could not extract text content' in msg
+                or 'Extracted text is empty' in msg
+            )
+            http_status = status.HTTP_400_BAD_REQUEST if is_expected else status.HTTP_500_INTERNAL_SERVER_ERROR
             return Response(
                 {'error': f'Failed to ingest document: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                status=http_status
             )
 
     @action(detail=True, methods=['post'])

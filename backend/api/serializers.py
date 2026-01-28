@@ -72,6 +72,11 @@ class DocumentSerializer(serializers.ModelSerializer):
             'status',
             'ocr_model',
             'error_message',
+            'rag_status',
+            'rag_progress',
+            'rag_error_message',
+            'rag_started_at',
+            'rag_completed_at',
             'extracted_data',
             'confidence_score',
             'fund_data',
@@ -80,7 +85,20 @@ class DocumentSerializer(serializers.ModelSerializer):
             'edit_count',
             'last_edited_at'
         ]
-        read_only_fields = ['uploaded_at', 'processed_at', 'status', 'confidence_score', 'fund_data', 'edit_count', 'last_edited_at']
+        read_only_fields = [
+            'uploaded_at',
+            'processed_at',
+            'status',
+            'confidence_score',
+            'fund_data',
+            'edit_count',
+            'last_edited_at',
+            'rag_status',
+            'rag_progress',
+            'rag_error_message',
+            'rag_started_at',
+            'rag_completed_at',
+        ]
     
     def get_file_url(self, obj):
         """Get the full URL for the uploaded file"""
@@ -141,8 +159,8 @@ class DocumentListSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Document
-        fields = ['id', 'file_name', 'uploaded_at', 'status', 'fund_name', 'fund_code', 'edit_count', 'last_edited_at']
-        read_only_fields = ['id', 'file_name', 'uploaded_at', 'status', 'edit_count', 'last_edited_at']
+        fields = ['id', 'file_name', 'uploaded_at', 'status', 'rag_status', 'rag_progress', 'fund_name', 'fund_code', 'edit_count', 'last_edited_at']
+        read_only_fields = ['id', 'file_name', 'uploaded_at', 'status', 'rag_status', 'rag_progress', 'edit_count', 'last_edited_at']
     
     def get_fund_name(self, obj):
         """Get fund name from related fund_data or extracted_data"""

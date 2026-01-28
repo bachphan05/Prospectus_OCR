@@ -1850,6 +1850,63 @@ class DocumentProcessingService:
             
             logger.info(f"Successfully processed document {document_id}")
 
+            # --- STEP 4: Auto RAG ingestion (chunk + embed) ---
+            # Goal: user can chat without waiting 5-7 minutes after clicking a separate "process" button.
+            # Can be disabled by setting AUTO_RAG_INGEST_ON_UPLOAD=0/false/no.
+            auto_rag_raw = os.getenv("AUTO_RAG_INGEST_ON_UPLOAD", "true").strip().lower()
+            auto_rag_enabled = auto_rag_raw not in {"0", "false", "no", "off"}
+            if auto_rag_enabled:
+                # If RAG was already kicked off at upload time, don't start again here.
+                try:
+                    current = Document.objects.only('rag_status').get(id=document_id).rag_status
+                except Exception:
+                    current = None
+                if current in {'queued', 'running', 'completed'}:
+                    logger.info(f"Auto RAG: document {document_id} already {current}; skipping post-processing trigger")
+                    return
+
+                try:
+                    Document.objects.filter(id=document_id).update(
+                        rag_status='queued',
+                        rag_progress=0,
+                        rag_error_message=None,
+                        rag_started_at=None,
+                        rag_completed_at=None,
+                    )
+                except Exception:
+                    # Best-effort only
+                    pass
+
+                def _rag_task(doc_id: int):
+                    try:
+                        from django.db import close_old_connections
+
+                        close_old_connections()
+                        doc = Document.objects.get(id=doc_id)
+                        if doc.chunks.exists():
+                            logger.info(f"Auto RAG: document {doc_id} already ingested; skipping")
+                            try:
+                                Document.objects.filter(id=doc_id).update(
+                                    rag_status='completed',
+                                    rag_progress=100,
+                                    rag_error_message=None,
+                                    rag_completed_at=timezone.now(),
+                                )
+                            except Exception:
+                                pass
+                            return
+
+                        logger.info(f"Auto RAG: starting ingestion for document {doc_id}")
+                        RAGService().ingest_document(doc_id)
+                        close_old_connections()
+                        logger.info(f"Auto RAG: ingestion completed for document {doc_id}")
+                    except Exception as e:
+                        logger.error(f"Auto RAG: ingestion failed for document {doc_id}: {str(e)}")
+
+                threading.Thread(target=_rag_task, args=(document_id,), daemon=True).start()
+            else:
+                logger.info("Auto RAG: disabled by AUTO_RAG_INGEST_ON_UPLOAD")
+
         except Exception as e:
             logger.error(f"Error processing document {document_id}: {str(e)}")
             try:
@@ -1901,10 +1958,27 @@ class RAGService:
             document = Document.objects.get(id=document_id)
             logger.info(f"Starting RAG ingestion for Doc {document_id}")
 
+            # Mark as running (best-effort)
+            try:
+                Document.objects.filter(id=document_id).update(
+                    rag_status='running',
+                    rag_progress=0,
+                    rag_error_message=None,
+                    rag_started_at=timezone.now(),
+                    rag_completed_at=None,
+                )
+            except Exception:
+                pass
+
             # 1. Check if already ingested to avoid duplicates
             if document.chunks.exists():
                 logger.info(f"Document {document_id} already ingested. Deleting old chunks...")
                 document.chunks.all().delete()
+
+            try:
+                Document.objects.filter(id=document_id).update(rag_progress=5)
+            except Exception:
+                pass
 
             # 2. Extract Raw Content (optimized for Scanned PDFs)
             # Since Mistral/Gemini services return JSON, we might not have the full text saved.
@@ -1913,6 +1987,11 @@ class RAGService:
             
             if not full_text:
                 raise ValueError("Could not extract text content from document")
+
+            try:
+                Document.objects.filter(id=document_id).update(rag_progress=15)
+            except Exception:
+                pass
 
             # 3. Chunking Strategy
             # Parse page markers (supports both formats: "--- PAGE X ---" and "=== PAGE X ===")
@@ -1976,13 +2055,28 @@ class RAGService:
             
             logger.info(f"Created {len(all_chunks_with_pages)} chunks from document.")
 
+            try:
+                Document.objects.filter(id=document_id).update(rag_progress=30)
+            except Exception:
+                pass
+
             # 4. Generate Embeddings & Save (Batch Processing)
             batch_size = 10  # Reduced batch size to avoid SSL timeouts
             chunks_to_create = []
+
+            total_chunks = len(all_chunks_with_pages) or 1
             
             for i in range(0, len(all_chunks_with_pages), batch_size):
                 batch = all_chunks_with_pages[i:i + batch_size]
                 batch_texts = [d.page_content for d in batch]
+
+                # Progress: 30% -> 95% across embedding work
+                try:
+                    done = min(i, total_chunks)
+                    pct = 30 + int((done / total_chunks) * 65)
+                    Document.objects.filter(id=document_id).update(rag_progress=min(max(pct, 30), 95))
+                except Exception:
+                    pass
                 
                 # Call Gemini Embedding API with retry logic
                 max_retries = 3
@@ -2049,11 +2143,28 @@ class RAGService:
             # Final count
             total_chunks = document.chunks.count()
             logger.info(f"Successfully saved {total_chunks} vector chunks total.")
+
+            try:
+                Document.objects.filter(id=document_id).update(
+                    rag_status='completed',
+                    rag_progress=100,
+                    rag_error_message=None,
+                    rag_completed_at=timezone.now(),
+                )
+            except Exception:
+                pass
             
             return True
 
         except Exception as e:
             logger.error(f"RAG Ingestion Error: {str(e)}")
+            try:
+                Document.objects.filter(id=document_id).update(
+                    rag_status='failed',
+                    rag_error_message=str(e),
+                )
+            except Exception:
+                pass
             raise
 
     def chat(self, document_id: int, user_query: str, history: list = None) -> str:
@@ -2236,24 +2347,45 @@ QUY TẮC:
         import time 
         
         try:
-            # Use ORIGINAL uploaded PDF for RAG extraction (per product requirement)
-            # Note: this may be slower than using an optimized/segmented version.
-            file_path = document.file.path
-            if hasattr(document, 'optimized_file') and document.optimized_file:
-                logger.info(
-                    "RAG Extraction: optimized_file exists but will be ignored; using original upload instead."
+            # Prefer ORIGINAL uploaded PDF for RAG extraction.
+            # If the original is missing on disk (e.g., file moved/cleaned up), fall back to optimized_file.
+            original_path = None
+            try:
+                original_path = document.file.path
+            except Exception:
+                original_path = None
+
+            optimized_path = None
+            if getattr(document, 'optimized_file', None):
+                try:
+                    optimized_path = document.optimized_file.path
+                except Exception:
+                    optimized_path = None
+
+            chosen_path = None
+            if original_path and os.path.exists(original_path):
+                chosen_path = original_path
+                if optimized_path:
+                    logger.info(
+                        "RAG Extraction: optimized_file exists; using original upload (preferred)."
+                    )
+                logger.info(f"Extracting raw content for RAG from ORIGINAL PDF: {chosen_path}")
+            elif optimized_path and os.path.exists(optimized_path):
+                chosen_path = optimized_path
+                logger.warning(
+                    f"RAG Extraction: original PDF missing on disk ({original_path}). Falling back to optimized_file: {optimized_path}"
                 )
-
-            logger.info(f"Extracting raw content for RAG from ORIGINAL PDF: {file_path}")
-
-            if not file_path or not os.path.exists(file_path):
-                raise ValueError(f"PDF file not found on disk: {file_path}")
+                logger.info(f"Extracting raw content for RAG from OPTIMIZED PDF: {chosen_path}")
+            else:
+                raise ValueError(
+                    f"No PDF file found on disk for RAG extraction. original={original_path}, optimized={optimized_path}"
+                )
             
             doc = None
             full_text = ""
             last_error: str | None = None
 
-            doc = fitz.open(file_path)
+            doc = fitz.open(chosen_path)
             
             # Process pages in batches of 15 to be safe
             batch_size = 15

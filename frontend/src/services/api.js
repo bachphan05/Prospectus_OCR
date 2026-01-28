@@ -10,25 +10,51 @@ class ApiService {
    * Upload a PDF document
    * @param {File} file - The PDF file to upload
    * @param {string} ocrModel - The OCR model to use ('gemini' or 'mistral')
+   * @param {(pct:number)=>void} onProgress - Optional callback receiving upload percentage (0-100)
    * @returns {Promise} API response
    */
-  async uploadDocument(file, ocrModel = 'gemini') {
+  async uploadDocument(file, ocrModel = 'gemini', onProgress) {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('file_name', file.name);
     formData.append('ocr_model', ocrModel);
 
-    const response = await fetch(`${API_BASE_URL}/documents/`, {
-      method: 'POST',
-      body: formData,
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE_URL}/documents/`);
+
+      if (xhr.upload && typeof onProgress === 'function') {
+        xhr.upload.onprogress = (evt) => {
+          if (!evt.lengthComputable) return;
+          const pct = Math.round((evt.loaded / evt.total) * 100);
+          onProgress(pct);
+        };
+      }
+
+      xhr.onload = () => {
+        const ok = xhr.status >= 200 && xhr.status < 300;
+        let data = null;
+        try {
+          data = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+        } catch {
+          data = null;
+        }
+
+        if (!ok) {
+          const msg = (data && (data.message || data.error)) || 'Upload failed (Tải lên thất bại)';
+          reject(new Error(msg));
+          return;
+        }
+
+        resolve(data);
+      };
+
+      xhr.onerror = () => {
+        reject(new Error('Upload failed (Network error)'));
+      };
+
+      xhr.send(formData);
     });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || 'Upload failed (Tải lên thất bại)');
-    }
-
-    return response.json();
   }
 
   /**

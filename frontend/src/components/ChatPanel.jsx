@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '../services/api';
 
 /**
@@ -8,21 +8,134 @@ function ChatPanel({ document, onClose }) {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
+  const [isCheckingRagStatus, setIsCheckingRagStatus] = useState(false);
   const [isIngesting, setIsIngesting] = useState(false);
   const [isIngested, setIsIngested] = useState(false);
+  const [ragStatus, setRagStatus] = useState(null);
+  const [ragProgress, setRagProgress] = useState(0);
+  const [ragErrorMessage, setRagErrorMessage] = useState(null);
   const [error, setError] = useState(null);
   const messagesEndRef = useRef(null);
   const hasLoadedHistoryRef = useRef(false);
   const saveDebounceRef = useRef(null);
+  const historyLoadTokenRef = useRef(0);
+  const ragStatusTokenRef = useRef(0);
+
+  const loadChatHistory = useCallback(async () => {
+    if (!document?.id) return;
+
+    historyLoadTokenRef.current += 1;
+    const token = historyLoadTokenRef.current;
+    setIsLoadingHistory(true);
+    setIsHistoryLoaded(false);
+
+    try {
+      const res = await api.getChatHistory(document.id);
+      const saved = Array.isArray(res?.history) ? res.history : [];
+
+      if (token !== historyLoadTokenRef.current) return;
+
+      if (saved.length > 0) {
+        setMessages(
+          saved.map((m) => ({
+            sender: m.sender,
+            text: m.text,
+            timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+            chunks_count: m.chunks_count,
+          }))
+        );
+      }
+    } catch (err) {
+      console.warn('Failed to load chat history:', err);
+    } finally {
+      if (token === historyLoadTokenRef.current) {
+        hasLoadedHistoryRef.current = true;
+        setIsLoadingHistory(false);
+        setIsHistoryLoaded(true);
+      }
+    }
+  }, [document?.id]);
+
+  const checkIngestionStatus = useCallback(async () => {
+    if (!document?.id) return;
+
+    ragStatusTokenRef.current += 1;
+    const token = ragStatusTokenRef.current;
+    setIsCheckingRagStatus(true);
+
+    try {
+      const result = await api.ragStatus(document.id);
+
+      if (token !== ragStatusTokenRef.current) return;
+
+      setRagStatus(result?.rag_status ?? null);
+      setRagProgress(typeof result?.rag_progress === 'number' ? result.rag_progress : 0);
+      setRagErrorMessage(result?.rag_error_message ?? null);
+
+      if (result.is_ingested) {
+        setIsIngested(true);
+        setIsIngesting(false);
+        // Only inject the default system message if there's no existing conversation.
+        setMessages((prev) => {
+          if (Array.isArray(prev) && prev.length > 0) return prev;
+          return [
+            {
+              sender: 'system',
+              text: `Document ready (Tài liệu sẵn sàng)! ${result.chunks_count} knowledge chunks available (Có sẵn ${result.chunks_count} đoạn kiến thức). You can ask questions now (Bạn có thể đặt câu hỏi ngay).`,
+              timestamp: new Date(),
+            },
+          ];
+        });
+        return;
+      }
+
+      // Not ingested yet: reflect background RAG status.
+      const status = result?.rag_status;
+      if (status === 'queued' || status === 'running') {
+        setIsIngested(false);
+        setIsIngesting(true);
+      } else {
+        setIsIngesting(false);
+        setIsIngested(false);
+      }
+    } catch (err) {
+      console.error('Failed to check ingestion status:', err);
+      setIsIngested(false);
+      setIsIngesting(false);
+      setRagStatus(null);
+      setRagProgress(0);
+      setRagErrorMessage(null);
+    } finally {
+      if (token === ragStatusTokenRef.current) {
+        setIsCheckingRagStatus(false);
+      }
+    }
+  }, [document?.id]);
 
   useEffect(() => {
     // Load persisted chat history (if any) then check ingestion.
     hasLoadedHistoryRef.current = false;
     setMessages([]);
     setError(null);
+    setIsHistoryLoaded(false);
+    setIsCheckingRagStatus(false);
     loadChatHistory();
     checkIngestionStatus();
-  }, [document]);
+  }, [document?.id, loadChatHistory, checkIngestionStatus]);
+
+  useEffect(() => {
+    // Poll RAG status while it is queued/running.
+    if (!document?.id) return;
+    if (!(ragStatus === 'queued' || ragStatus === 'running' || isIngesting)) return;
+
+    const id = setInterval(() => {
+      checkIngestionStatus();
+    }, 5000);
+
+    return () => clearInterval(id);
+  }, [document?.id, ragStatus, isIngesting, checkIngestionStatus]);
 
   useEffect(() => {
     // Persist chat history (debounced) whenever messages change.
@@ -62,52 +175,7 @@ function ChatPanel({ document, onClose }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const loadChatHistory = async () => {
-    if (!document?.id) return;
-
-    try {
-      const res = await api.getChatHistory(document.id);
-      const saved = Array.isArray(res?.history) ? res.history : [];
-
-      if (saved.length > 0) {
-        setMessages(
-          saved.map((m) => ({
-            sender: m.sender,
-            text: m.text,
-            timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
-            chunks_count: m.chunks_count,
-          }))
-        );
-      }
-    } catch (err) {
-      console.warn('Failed to load chat history:', err);
-    } finally {
-      hasLoadedHistoryRef.current = true;
-    }
-  };
-
-  const checkIngestionStatus = async () => {
-    try {
-      const result = await api.ragStatus(document.id);
-      if (result.is_ingested) {
-        setIsIngested(true);
-        // Only inject the default system message if there's no existing conversation.
-        setMessages((prev) => {
-          if (Array.isArray(prev) && prev.length > 0) return prev;
-          return [
-            {
-              sender: 'system',
-              text: `Document ready (Tài liệu sẵn sàng)! ${result.chunks_count} knowledge chunks available (Có sẵn ${result.chunks_count} đoạn kiến thức). You can ask questions now (Bạn có thể đặt câu hỏi ngay).`,
-              timestamp: new Date(),
-            },
-          ];
-        });
-      }
-    } catch (err) {
-      console.error('Failed to check ingestion status:', err);
-      setIsIngested(false);
-    }
-  };
+  
 
   const handleIngest = async () => {
     setIsIngesting(true);
@@ -116,6 +184,10 @@ function ChatPanel({ document, onClose }) {
     try {
       const result = await api.ingestForRag(document.id);
       setIsIngested(true);
+      setIsIngesting(false);
+      setRagStatus('completed');
+      setRagProgress(100);
+      setRagErrorMessage(null);
       setMessages((prev) => {
         if (Array.isArray(prev) && prev.length > 0) return prev;
         return [
@@ -129,6 +201,8 @@ function ChatPanel({ document, onClose }) {
     } catch (err) {
       console.error('Ingestion error:', err);
       setError(err.message || 'Failed to process document for chat (Xử lý tài liệu để trò chuyện thất bại)');
+      setRagStatus('failed');
+      setRagErrorMessage(err.message || 'Failed to process document');
     } finally {
       setIsIngesting(false);
     }
@@ -250,8 +324,21 @@ function ChatPanel({ document, onClose }) {
           </button>
         </div>
 
-        {/* Ingestion Required */}
-        {!isIngested && !isIngesting && (
+        {/* Checking RAG Status (avoid flashing the manual button) */}
+        {!isIngested && !isIngesting && isCheckingRagStatus && (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gray-50">
+            <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Checking document status... (Đang kiểm tra trạng thái tài liệu...)
+            </h3>
+            <p className="text-gray-600 text-center max-w-md">
+              Loading RAG status for chat (Đang tải trạng thái RAG để trò chuyện).
+            </p>
+          </div>
+        )}
+
+        {/* Ingestion Required (only when auto RAG not started or failed) */}
+        {!isIngested && !isIngesting && !isCheckingRagStatus && (ragStatus === 'not_started' || ragStatus === 'failed' || ragStatus === null) && (
           <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gray-50">
             <svg
               className="w-20 h-20 text-blue-500 mb-4"
@@ -267,11 +354,23 @@ function ChatPanel({ document, onClose }) {
               />
             </svg>
             <h3 className="text-xl font-semibold text-gray-900 mb-2">
-              Process document for chat (Xử lý tài liệu để trò chuyện)
+              {ragStatus === 'failed'
+                ? 'RAG processing failed (Xử lý RAG thất bại)'
+                : 'Process document for chat (Xử lý tài liệu để trò chuyện)'}
             </h3>
             <p className="text-gray-600 text-center mb-6 max-w-md">
-              To enable AI-powered chat, we need to process this document first (Để bật trò chuyện với AI, cần xử lý tài liệu trước). This creates a
-              knowledge base that allows you to ask questions and get accurate answers (Điều này tạo cơ sở kiến thức để bạn đặt câu hỏi và nhận câu trả lời chính xác).
+              {ragStatus === 'failed' ? (
+                <>
+                  {ragErrorMessage || 'The document could not be processed for chat.'}
+                  <br />
+                  You can retry processing (Bạn có thể thử xử lý lại).
+                </>
+              ) : (
+                <>
+                  To enable AI-powered chat, we need to process this document first (Để bật trò chuyện với AI, cần xử lý tài liệu trước). This creates a
+                  knowledge base that allows you to ask questions and get accurate answers (Điều này tạo cơ sở kiến thức để bạn đặt câu hỏi và nhận câu trả lời chính xác).
+                </>
+              )}
             </p>
             <button
               onClick={handleIngest}
@@ -290,7 +389,7 @@ function ChatPanel({ document, onClose }) {
                   d="M13 10V3L4 14h7v7l9-11h-7z"
                 />
               </svg>
-              Process document (Xử lý tài liệu)
+              {ragStatus === 'failed' ? 'Retry processing (Thử lại)' : 'Process document (Xử lý tài liệu)'}
             </button>
             {error && (
               <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
@@ -300,14 +399,31 @@ function ChatPanel({ document, onClose }) {
           </div>
         )}
 
-        {/* Ingesting State */}
+        {/* Ingesting/Queued State (auto or manual) */}
         {isIngesting && (
           <div className="flex-1 flex flex-col items-center justify-center p-8">
             <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Processing document... (Đang xử lý tài liệu...)</h3>
-            <p className="text-gray-600 text-center">
-              Creating knowledge chunks and generating embeddings (Đang tạo đoạn kiến thức và embeddings). This may take 1-2 minutes (Có thể mất 1-2 phút).
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              {ragStatus === 'queued'
+                ? 'Queued for processing... (Đang xếp hàng xử lý...)'
+                : 'Processing document... (Đang xử lý tài liệu...)'}
+            </h3>
+            <p className="text-gray-600 text-center max-w-md">
+              Creating knowledge chunks and generating embeddings (Đang tạo đoạn kiến thức và embeddings). This may take several minutes (Có thể mất vài phút).
             </p>
+
+            <div className="w-full max-w-md mt-6">
+              <div className="flex justify-between text-xs text-gray-600 mb-1">
+                <span>RAG progress</span>
+                <span>{Math.min(Math.max(ragProgress || 0, 0), 100)}%</span>
+              </div>
+              <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className="h-2 bg-blue-600 transition-all"
+                  style={{ width: `${Math.min(Math.max(ragProgress || 0, 0), 100)}%` }}
+                />
+              </div>
+            </div>
           </div>
         )}
 
@@ -316,7 +432,14 @@ function ChatPanel({ document, onClose }) {
           <>
             {/* Messages Area */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
-              {messages.length === 0 && (
+              {isLoadingHistory && !isHistoryLoaded && messages.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-3"></div>
+                  <p className="text-sm text-gray-600">Loading chat history... (Đang tải lịch sử trò chuyện...)</p>
+                </div>
+              )}
+
+              {messages.length === 0 && !isLoadingHistory && isHistoryLoaded && (
                 <div className="text-center py-8">
                   <p className="text-gray-600 mb-6">
                     Ask me anything about this document (Hỏi bất kỳ điều gì về tài liệu này). Try these questions (Thử các câu hỏi sau):
