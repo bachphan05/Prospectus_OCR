@@ -65,15 +65,8 @@ class DocumentViewSet(viewsets.ModelViewSet):
         # Save document
         document = serializer.save()
 
-        # ======================================================================
-        # PARALLEL PROCESSING: Start TWO independent background threads
-        # ======================================================================
-        # Thread 1: RAG ingestion (uses ORIGINAL raw PDF for full-text extraction)
-        # Thread 2: Optimization + OCR extraction (creates optimized PDF, extracts structured data)
-        # These run simultaneously to maximize throughput and minimize user wait time.
-        # ======================================================================
-
-        # Thread 1: Start RAG ingestion immediately (runs in background)
+        # Start RAG ingestion immediately after upload (runs in background)
+        # This overlaps the 5-7 minute chunking/embedding time with OCR extraction.
         auto_rag_raw = os.getenv("AUTO_RAG_INGEST_ON_UPLOAD", "true").strip().lower()
         auto_rag_enabled = auto_rag_raw not in {"0", "false", "no", "off"}
         if auto_rag_enabled:
@@ -108,11 +101,14 @@ class DocumentViewSet(viewsets.ModelViewSet):
 
             threading.Thread(target=_rag_task, args=(document.id,), daemon=True).start()
         
-        # Thread 2: Start optimization + OCR extraction (runs in parallel with RAG)
+        # Start async processing
         try:
             processing_service = DocumentProcessingService()
             processing_service.process_document(document.id)
             logger.info(f"Started processing for document {document.id}")
+
+            # RAG ingestion now starts automatically after processing completes
+            # (see DocumentProcessingService._process_document_task).
         except Exception as e:
             logger.error(f"Failed to start processing: {str(e)}")
             document.status = 'failed'
@@ -689,4 +685,3 @@ def health_check(request):
         'status': 'healthy',
         'service': 'IDP Backend API'
     })
-
