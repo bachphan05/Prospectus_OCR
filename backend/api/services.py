@@ -75,6 +75,9 @@ def normalize_text_for_matching(text: str) -> str:
     text = remove_vietnamese_diacritics(text)
     return "".join(c for c in text if c.isalnum())
 
+
+
+
 try:
     ocr_engine = RapidOCR(lang_list=['en', 'vi'], gpu_id=0 if getattr(settings, 'USE_GPU', False) else -1)
     logger.info("RapidOCR engine initialized")
@@ -2018,6 +2021,33 @@ class RAGService:
         self.embedding_model = "models/text-embedding-004"
         self.chat_model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
+    def _clean_text_for_rag(self, text: str) -> str:
+        """Removes repetitive headers/footers and fixes extraction glitches."""
+        # 1. Remove common headers
+        lines = text.split('\n')
+        cleaned_lines: list[str] = []
+        for line in lines:
+            # Skip standard headers
+            if "ỦY BAN CHỨNG KHOÁN NHÀ NƯỚC" in line:
+                continue
+            if "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM" in line:
+                continue
+            if "Độc lập - Tự do - Hạnh phúc" in line:
+                continue
+            if "BẢN CÁO BẠCH" in line:
+                continue
+            cleaned_lines.append(line)
+
+        text = "\n".join(cleaned_lines)
+
+        # 2. Fix the "looping phrase" glitch (heuristic)
+        # If a line repeats itself within a short window, cut it.
+        # (This handles the "sở hữu của một Quỹ..." loop)
+        import re
+        # This regex looks for phrases of 10+ chars that repeat immediately
+        text = re.sub(r'(.{10,})\1+', r'\1', text)
+        return text
+
     def ingest_document(self, document_id: int) -> bool:
         """
         Process a document into vector chunks for RAG.
@@ -2053,9 +2083,21 @@ class RAGService:
             # Since Mistral/Gemini services return JSON, we might not have the full text saved.
             # We call a helper to get the raw markdown representation.
             full_text = self._extract_content_for_rag(document)
-            
+            full_text = self._clean_text_for_rag(full_text)
+
             if not full_text:
                 raise ValueError("Could not extract text content from document")
+
+            # DEBUG: Save extracted markdown for inspection
+            try:
+                debug_dir = os.path.join(settings.MEDIA_ROOT, 'debug_markdown')
+                os.makedirs(debug_dir, exist_ok=True)
+                debug_file = os.path.join(debug_dir, f'document_{document_id}_extracted.md')
+                with open(debug_file, 'w', encoding='utf-8') as f:
+                    f.write(full_text)
+                logger.info(f"✓ Saved extracted markdown to: {debug_file}")
+            except Exception as e:
+                logger.warning(f"Failed to save debug markdown: {e}")
 
             try:
                 Document.objects.filter(id=document_id).update(rag_progress=15)
@@ -2111,8 +2153,8 @@ class RAGService:
                 
                 # Then split into smaller chunks
                 text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1500, 
-                    chunk_overlap=300,
+                    chunk_size=800, 
+                    chunk_overlap=100,
                     separators=["\n\n", "\n", ".", " ", ""]
                 )
                 split_docs = text_splitter.split_documents(docs)
@@ -2247,11 +2289,15 @@ class RAGService:
                 pass
             raise
 
-    def chat(self, document_id: int, user_query: str, history: list = None) -> str:
+    def chat(self, document_id: int, user_query: str, history: list = None, return_source=False, **kwargs) -> dict|str:
         """
         Answer a user question using RAG.
         """
         try:
+            # Backwards compatibility: some callers might use `return_sources` (plural).
+            if "return_sources" in kwargs and kwargs["return_sources"] is True:
+                return_source = True
+
             document = Document.objects.get(id=document_id)
 
             def get_value(field_data):
@@ -2364,14 +2410,21 @@ THÔNG TIN CƠ BẢN ĐÃ ĐƯỢC TRÍCH XUẤT (từ Document.extracted_data):
 """.strip()
 
             # 2. Vector Search (Semantic Retrieval) cho câu hỏi giải thích / chiến lược / rủi ro...
-            rag_context = ""
+            rag_context_str = ""
+            retrieved_chunks = []
             try:
                 query_embedding = genai.embed_content(
                     model=self.embedding_model,
                     content=user_query,
                     task_type="retrieval_query"
                 )['embedding']
-
+                retrieved_chunks = DocumentChunk.objects.filter(document_id=document_id) \
+                    .annotate(distance=CosineDistance('embedding', query_embedding)) \
+                    .order_by('distance')[:25]
+                # Create the string for the LLM
+                rag_context_str = "\n\n---\n\n".join(
+                    [f"=== PAGE {c.page_number} ===\n{c.content}" for c in retrieved_chunks]
+                )
                 relevant_chunks = DocumentChunk.objects.filter(document_id=document_id) \
                     .annotate(distance=CosineDistance('embedding', query_embedding)) \
                     .order_by('distance')[:25]
@@ -2412,7 +2465,13 @@ QUY TẮC:
             # Start chat session
             chat = self.chat_model.start_chat(history=chat_history)
             response = chat.send_message(f"{system_prompt}\n\nCÂU HỎI: {user_query}")
-            
+            response_text = response.text 
+            if return_source:
+                return {
+                    "text": response_text,
+                    "contexts": [c.content for c in retrieved_chunks],
+                    "structured_data_used": structured_info # Optional: capture this too
+                }
             return response.text
 
         except Exception as e:

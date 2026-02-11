@@ -4,7 +4,6 @@ django-cors-headers
 python-dotenv
 psycopg[binary]
 pgvector
-
 google-generativeai
 mistralai
 langchain-text-splitters
@@ -13,3 +12,6 @@ PyMuPDF
 PyPDF2
 Pillow
 unidecode
+ragas
+langchain-google-genai 
+datasets
