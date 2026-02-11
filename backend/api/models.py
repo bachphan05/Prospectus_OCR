@@ -7,7 +7,7 @@ class DocumentChunk(models.Model):
     document = models.ForeignKey('Document', on_delete=models.CASCADE, related_name='chunks')
     content = models.TextField()
     page_number = models.IntegerField()
-    embedding = VectorField(dimensions=768)
+    embedding = VectorField(dimensions=1024)
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         indexes = [
@@ -79,6 +79,9 @@ class Document(models.Model):
     
     # Optimized PDF file (containing only relevant pages)
     optimized_file = models.FileField(upload_to='optimized_documents/%Y/%m/%d/', null=True, blank=True)
+    
+    # Store the extracted Markdown from OCR
+    markdown_file = models.FileField(upload_to='markdown_outputs/%Y/%m/%d/', null=True, blank=True)
     
     # For evaluation purposes
     confidence_score = models.FloatField(null=True, blank=True)

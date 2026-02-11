@@ -60,6 +60,7 @@ class DocumentSerializer(serializers.ModelSerializer):
     fund_data = ExtractedFundDataSerializer(read_only=True)
     file_url = serializers.SerializerMethodField()
     optimized_file_url = serializers.SerializerMethodField()
+    markdown_file_url = serializers.SerializerMethodField()
     
     class Meta:
         model = Document
@@ -82,6 +83,8 @@ class DocumentSerializer(serializers.ModelSerializer):
             'fund_data',
             'file_url',
             'optimized_file_url',
+            'markdown_file',
+            'markdown_file_url',
             'edit_count',
             'last_edited_at'
         ]
@@ -116,6 +119,15 @@ class DocumentSerializer(serializers.ModelSerializer):
             if request is not None:
                 return request.build_absolute_uri(obj.optimized_file.url)
             return obj.optimized_file.url
+        return None
+
+    def get_markdown_file_url(self, obj):
+        """Get the full URL for the markdown file"""
+        request = self.context.get('request')
+        if obj.markdown_file and hasattr(obj.markdown_file, 'url'):
+            if request is not None:
+                return request.build_absolute_uri(obj.markdown_file.url)
+            return obj.markdown_file.url
         return None
 
 

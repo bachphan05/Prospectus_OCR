@@ -1239,38 +1239,125 @@ class MistralOCRService:
             raise ValueError("MISTRAL_API_KEY environment variable is not set")
         
         self.client = Mistral(api_key=api_key)
-        self.model = "mistral-large-latest"
+        self.model = "mistral-ocr-latest"
         # Model used for the JSON extraction (chat) step
         self.extraction_model = self.model
     
-    def extract_structured_data(self, pdf_path: str) -> dict:
-        try:
-            logger.info(f"Uploading PDF to Mistral OCR: {pdf_path}")
-            
-            # BƯỚC 1: Upload file lên Mistral (Bắt buộc cho OCR API)
-            with open(pdf_path, "rb") as f:
-                uploaded_file = self.client.files.upload(
-                    file={
-                        "file_name": os.path.basename(pdf_path),
-                        "content": f,
-                    },
-                    purpose="ocr"
+    def get_markdown(self, pdf_path: str) -> str:
+        """
+        Run Mistral OCR on the PDF and return the Combined Markdown text.
+        """
+        import random
+        import time
+
+        last_error: Exception | None = None
+        max_attempts = 4
+        base_wait_seconds = 2
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.info(
+                    f"Uploading PDF to Mistral OCR (Markdown Only): {pdf_path} (attempt {attempt}/{max_attempts})"
                 )
-            
-            # Lấy signed URL để xử lý
-            signed_url = self.client.files.get_signed_url(file_id=uploaded_file.id)
-            
-            # BƯỚC 2: Gọi Native OCR API (Dùng hàm ocr.process)
-            # Lưu ý: Không cần convert sang ảnh thủ công, Mistral tự đọc PDF
-            logger.info("Running Mistral OCR...")
-            ocr_response = self.client.ocr.process(
-                model="mistral-ocr-latest",
-                document={
-                    "type": "document_url",
-                    "document_url": signed_url.url,
-                },
-                include_image_base64=False 
-            )
+
+                with open(pdf_path, "rb") as f:
+                    uploaded_file = self.client.files.upload(
+                        file={
+                            "file_name": os.path.basename(pdf_path),
+                            "content": f,
+                        },
+                        purpose="ocr"
+                    )
+
+                signed_url = self.client.files.get_signed_url(file_id=uploaded_file.id)
+
+                logger.info(f"Running Mistral OCR... (attempt {attempt}/{max_attempts})")
+                ocr_response = self.client.ocr.process(
+                    model="mistral-ocr-latest",
+                    document={
+                        "type": "document_url",
+                        "document_url": signed_url.url,
+                    },
+                    include_image_base64=False
+                )
+
+                full_markdown = ""
+                for i, page in enumerate(ocr_response.pages):
+                    full_markdown += f"\n\n=== PAGE {i + 1} ===\n{page.markdown}"
+
+                if not full_markdown.strip():
+                    raise ValueError("Mistral OCR returned empty markdown")
+
+                return full_markdown
+
+            except Exception as e:
+                last_error = e
+                message = str(e)
+                logger.warning(f"Mistral OCR markdown attempt {attempt} failed: {message}")
+
+                if attempt == max_attempts:
+                    break
+
+                wait = base_wait_seconds * (2 ** (attempt - 1)) + random.uniform(0, 1.0)
+                logger.info(f"Retrying Mistral OCR in {wait:.1f}s...")
+                time.sleep(wait)
+
+        logger.error(f"Error in Mistral OCR Markdown extraction after {max_attempts} attempts: {last_error}")
+        raise last_error
+
+    def extract_structured_data(self, pdf_path: str) -> dict:
+        import random
+        import time
+
+        try:
+            # Retry upload + OCR step (transient disconnects happen)
+            last_error: Exception | None = None
+            max_attempts = 4
+            base_wait_seconds = 2
+
+            ocr_response = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    logger.info(
+                        f"Uploading PDF to Mistral OCR: {pdf_path} (attempt {attempt}/{max_attempts})"
+                    )
+
+                    # BƯỚC 1: Upload file lên Mistral (Bắt buộc cho OCR API)
+                    with open(pdf_path, "rb") as f:
+                        uploaded_file = self.client.files.upload(
+                            file={
+                                "file_name": os.path.basename(pdf_path),
+                                "content": f,
+                            },
+                            purpose="ocr"
+                        )
+
+                    # Lấy signed URL để xử lý
+                    signed_url = self.client.files.get_signed_url(file_id=uploaded_file.id)
+
+                    # BƯỚC 2: Gọi Native OCR API (Dùng hàm ocr.process)
+                    logger.info(f"Running Mistral OCR... (attempt {attempt}/{max_attempts})")
+                    ocr_response = self.client.ocr.process(
+                        model="mistral-ocr-latest",
+                        document={
+                            "type": "document_url",
+                            "document_url": signed_url.url,
+                        },
+                        include_image_base64=False
+                    )
+
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Mistral OCR attempt {attempt} failed: {e}")
+                    if attempt == max_attempts:
+                        raise
+                    wait = base_wait_seconds * (2 ** (attempt - 1)) + random.uniform(0, 1.0)
+                    logger.info(f"Retrying Mistral OCR in {wait:.1f}s...")
+                    time.sleep(wait)
+
+            if ocr_response is None:
+                raise ValueError(f"Mistral OCR did not return a response. Last error: {last_error}")
             
             # Gộp kết quả Markdown từ các trang
             full_markdown = ""
@@ -1706,7 +1793,7 @@ class DocumentProcessingService:
                     extracted_data = self._get_gemini_service().extract_structured_data(optimized_pdf_path)
                 
                 extraction_time = time.time() - start_time
-                logger.info(f"✓ Extraction completed with {document.ocr_model} in {extraction_time:.2f} seconds")
+                logger.info(f">> Extraction completed with {document.ocr_model} in {extraction_time:.2f} seconds")
                 
             except Exception as e:
                 # If optimization caused an issue (e.g. 400 error), try original file as fallback
@@ -1720,7 +1807,7 @@ class DocumentProcessingService:
                     else:
                         extracted_data = self._get_gemini_service().extract_structured_data(document.file.path)
                     extraction_time = time.time() - start_time
-                    logger.info(f"✓ Extraction completed (fallback) with {document.ocr_model} in {extraction_time:.2f} seconds")
+                    logger.info(f">> Extraction completed (fallback) with {document.ocr_model} in {extraction_time:.2f} seconds")
                 else:
                     raise e
             
@@ -1786,14 +1873,14 @@ class DocumentProcessingService:
             document.extracted_data = extracted_data
             
             # Log key extracted fields for comparison
-            logger.info(f"📊 Model: {document.ocr_model} | Extraction Summary:")
-            logger.info(f"  ├─ Fund Name: {extracted_data.get('fund_name', 'NOT FOUND')}")
-            logger.info(f"  ├─ Fund Code: {extracted_data.get('fund_code', 'NOT FOUND')}")
-            logger.info(f"  ├─ Management Company: {extracted_data.get('management_company', 'NOT FOUND')}")
-            logger.info(f"  ├─ Custodian Bank: {extracted_data.get('custodian_bank', 'NOT FOUND')}")
-            logger.info(f"  ├─ Portfolio Items: {len(extracted_data.get('portfolio', []))}")
-            logger.info(f"  ├─ NAV History: {len(extracted_data.get('nav_history', []))}")
-            logger.info(f"  └─ Dividend History: {len(extracted_data.get('dividend_history', []))}")
+            logger.info(f"== Model: {document.ocr_model} | Extraction Summary:")
+            logger.info(f"  + Fund Name: {extracted_data.get('fund_name', 'NOT FOUND')}")
+            logger.info(f"  + Fund Code: {extracted_data.get('fund_code', 'NOT FOUND')}")
+            logger.info(f"  + Management Company: {extracted_data.get('management_company', 'NOT FOUND')}")
+            logger.info(f"  + Custodian Bank: {extracted_data.get('custodian_bank', 'NOT FOUND')}")
+            logger.info(f"  + Portfolio Items: {len(extracted_data.get('portfolio', []))}")
+            logger.info(f"  + NAV History: {len(extracted_data.get('nav_history', []))}")
+            logger.info(f"  + Dividend History: {len(extracted_data.get('dividend_history', []))}")
 
             # Helper function to extract value from either structured or flat format
             def get_value(field_data):
@@ -2018,7 +2105,12 @@ class RAGService:
             raise ValueError("GEMINI_API_KEY not set")
         
         genai.configure(api_key=api_key)
-        self.embedding_model = "models/text-embedding-004"
+        mistral_key = os.getenv('MISTRAL_API_KEY')
+        if not mistral_key:
+            raise ValueError("MISTRAL_API_KEY environment variable is not set")
+
+        self.mistral_client = Mistral(api_key=mistral_key)
+        self.embedding_model = "mistral-embed-2312"
         self.chat_model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
     def _clean_text_for_rag(self, text: str) -> str:
@@ -2095,7 +2187,7 @@ class RAGService:
                 debug_file = os.path.join(debug_dir, f'document_{document_id}_extracted.md')
                 with open(debug_file, 'w', encoding='utf-8') as f:
                     f.write(full_text)
-                logger.info(f"✓ Saved extracted markdown to: {debug_file}")
+                logger.info(f">> Saved extracted markdown to: {debug_file}")
             except Exception as e:
                 logger.warning(f"Failed to save debug markdown: {e}")
 
@@ -2198,21 +2290,25 @@ class RAGService:
                 while retry_count < max_retries:
                     try:
                         logger.info(f"Embedding batch {i//batch_size + 1}/{(len(all_chunks_with_pages) + batch_size - 1)//batch_size} ({len(batch)} chunks)")
-                        
-                        result = genai.embed_content(
+
+                        resp = self.mistral_client.embeddings.create(
                             model=self.embedding_model,
-                            content=batch_texts,
-                            task_type="retrieval_document"
+                            inputs=batch_texts,
                         )
-                        embeddings = result['embedding']
+                        embeddings = [item.embedding for item in resp.data]
                         break  # Success, exit retry loop
                         
                     except Exception as e:
                         retry_count += 1
+                        import random
+                        import time
+                        message = str(e)
+
                         if retry_count < max_retries:
-                            wait_time = 2 ** retry_count  # Exponential backoff: 2, 4, 8 seconds
-                            logger.warning(f"Embedding API error (attempt {retry_count}/{max_retries}): {str(e)}. Retrying in {wait_time}s...")
-                            import time
+                            wait_time = (2 ** retry_count) + random.uniform(0, 1.0)  # jitter
+                            logger.warning(
+                                f"Embedding API error (attempt {retry_count}/{max_retries}): {message}. Retrying in {wait_time}s..."
+                            )
                             time.sleep(wait_time)
                         else:
                             logger.error(f"Failed to embed batch after {max_retries} attempts: {str(e)}")
@@ -2413,11 +2509,10 @@ THÔNG TIN CƠ BẢN ĐÃ ĐƯỢC TRÍCH XUẤT (từ Document.extracted_data):
             rag_context_str = ""
             retrieved_chunks = []
             try:
-                query_embedding = genai.embed_content(
+                query_embedding = self.mistral_client.embeddings.create(
                     model=self.embedding_model,
-                    content=user_query,
-                    task_type="retrieval_query"
-                )['embedding']
+                    inputs=[user_query],
+                ).data[0].embedding
                 retrieved_chunks = DocumentChunk.objects.filter(document_id=document_id) \
                     .annotate(distance=CosineDistance('embedding', query_embedding)) \
                     .order_by('distance')[:25]
@@ -2520,6 +2615,26 @@ QUY TẮC:
                     f"No PDF file found on disk for RAG extraction. original={original_path}, optimized={optimized_path}"
                 )
             
+            # MISTRAL OCR Integration (ALWAYS ON for RAG per requirement)
+            # Try Mistral OCR first for highest quality extraction
+            try:
+                from django.core.files.base import ContentFile
+                logger.info(f"Using Mistral OCR for RAG extraction (forced for all documents)")
+                mistral_service = MistralOCRService()
+                markdown_text = mistral_service.get_markdown(chosen_path)
+                    
+                # Save to markdown_file
+                base_name = os.path.basename(chosen_path)
+                name_without_ext = os.path.splitext(base_name)[0]
+                markdown_filename = f"{name_without_ext}_ocr.md"
+                    
+                document.markdown_file.save(markdown_filename, ContentFile(markdown_text.encode('utf-8')), save=True)
+                logger.info(f"Saved Mistral OCR Markdown to {document.markdown_file.path}")
+
+                return markdown_text
+            except Exception as e:
+                logger.error(f"Mistral OCR failed: {e}. Falling back to default extraction (Gemini/PyMuPDF).")
+
             doc = None
             full_text = ""
             last_error: str | None = None
@@ -2618,7 +2733,18 @@ QUY TẮC:
             
             if not full_text.strip():
                 raise ValueError(f"Extracted text is empty. Last error: {last_error or 'unknown'}")
-                
+            
+            # Save fallback text to markdown_file so user can download it
+            try:
+                from django.core.files.base import ContentFile
+                base_name = os.path.basename(chosen_path)
+                name_without_ext = os.path.splitext(base_name)[0]
+                markdown_filename = f"{name_without_ext}_fallback.md"
+                document.markdown_file.save(markdown_filename, ContentFile(full_text.encode('utf-8')), save=True)
+                logger.info(f"Saved Fallback (Gemini) Markdown to {document.markdown_file.path}")
+            except Exception as e:
+                logger.warning(f"Failed to save fallback markdown: {e}")
+
             return full_text
 
         except Exception as e:
